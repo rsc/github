@@ -97,8 +97,8 @@
 //
 //	<describe issue here>
 //
-// Once the template has been completed, executing "Put" creates the issue and converts
-// the window into a issue window for the new issue.
+// Once the template has been completed (only the title is required), executing "Put"
+// creates the issue and converts the window into a issue window for the new issue.
 //
 // Issue List Window
 //
@@ -122,10 +122,10 @@
 //
 //	Search: author:rsc
 //
-//	#9131	bench: no documentation
-//	#599	cmd/5c, 5g, 8c, 8g: make 64-bit fields 64-bit aligned
-//	#6699	cmd/5l: use m to store div/mod denominator
-//	#4997	cmd/6a, cmd/8a: MOVL $x-8(SP) and LEAL x-8(SP) are different
+//	9131	bench: no documentation
+//	599	cmd/5c, 5g, 8c, 8g: make 64-bit fields 64-bit aligned
+//	6699	cmd/5l: use m to store div/mod denominator
+//	4997	cmd/6a, cmd/8a: MOVL $x-8(SP) and LEAL x-8(SP) are different
 //	...
 //
 // Milestone List Window
