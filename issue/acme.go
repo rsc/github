@@ -18,10 +18,9 @@ import (
 	"sync"
 	"time"
 
+	"9fans.net/go/acme"
+	"9fans.net/go/draw"
 	"github.com/google/go-github/github"
-
-	"code.google.com/p/goplan9/draw"
-	"code.google.com/p/goplan9/plan9/acme"
 )
 
 func acmeMode() {
