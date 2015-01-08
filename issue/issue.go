@@ -21,6 +21,16 @@
 // If the query is a single number, issue prints that issue in detail,
 // including all comments.
 //
+// Authentication
+//
+// Issue expects to find a GitHub "personal access token" in
+// $HOME/.github-issue-token and will use that token to authenticate
+// to GitHub when reading or writing issue data.
+// A token can be created by visiting https://github.com/settings/tokens/new.
+// The token only needs the 'repo' scope checkbox, and optionally 'private_repo'
+// if you want to work with issue trackers for private repositories.
+// It does not need any other permissions.
+//
 // Acme
 //
 // If the -a flag is specified, issue runs as a collection of acme windows
