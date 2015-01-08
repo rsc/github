@@ -132,7 +132,7 @@
 // Loading one of the listed milestone names opens a search for issues
 // in that milestone.
 //
-package main
+package main // import "rsc.io/github/issue"
 
 import (
 	"flag"
