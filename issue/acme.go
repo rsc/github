@@ -13,6 +13,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,15 +48,16 @@ const (
 
 type awin struct {
 	*acme.Win
-	prefix   string
-	mode     int
-	query    string
-	id       int
-	github   *github.Issue
-	tab      int
-	font     *draw.Font
-	fontName string
-	title    string
+	prefix       string
+	mode         int
+	query        string
+	id           int
+	github       *github.Issue
+	tab          int
+	font         *draw.Font
+	fontName     string
+	title        string
+	sortByNumber bool // otherwise sort by title
 }
 
 var all struct {
@@ -279,7 +281,7 @@ func (w *awin) newMilestoneList() {
 	w.mode = modeMilestone
 	w.query = ""
 	w.Ctl("cleartag")
-	w.Fprintf("tag", " New Get Search ")
+	w.Fprintf("tag", " New Get Sort Search ")
 	w.Write("body", []byte("Loading..."))
 	go w.load()
 	go w.loop()
@@ -290,7 +292,7 @@ func (w *awin) newSearch(title, query string) {
 	w.mode = modeQuery
 	w.query = query
 	w.Ctl("cleartag")
-	w.Fprintf("tag", " New Get Search ")
+	w.Fprintf("tag", " New Get Sort Search ")
 	w.Write("body", []byte("Loading..."))
 	go w.load()
 	go w.loop()
@@ -299,7 +301,7 @@ func (w *awin) newSearch(title, query string) {
 func (w *awin) blinker() func() {
 	c := make(chan struct{})
 	go func() {
-		t := time.NewTicker(300 * time.Millisecond)
+		t := time.NewTicker(1000 * time.Millisecond)
 		defer t.Stop()
 		dirty := false
 		for {
@@ -600,6 +602,68 @@ func (w *awin) selection() string {
 	return string(data)
 }
 
+func (w *awin) sort() {
+	if err := w.Addr("0/^[0-9]/,"); err != nil {
+		w.err("nothing to sort")
+	}
+	data, err := w.ReadAll("xdata")
+	if err != nil {
+		w.err(err.Error())
+		return
+	}
+	suffix := ""
+	lines := strings.Split(string(data), "\n")
+	if lines[len(lines)-1] == "" {
+		suffix = "\n"
+		lines = lines[:len(lines)-1]
+	}
+	if w.sortByNumber {
+		sort.Stable(byNumber(lines))
+	} else {
+		sort.Stable(bySecondField(lines))
+	}
+	w.Addr("0/^[0-9]/,")
+	w.Write("data", []byte(strings.Join(lines, "\n")+suffix))
+	w.Addr("0")
+	w.Ctl("dot=addr")
+	w.Ctl("show")
+}
+
+type byNumber []string
+
+func (x byNumber) Len() int      { return len(x) }
+func (x byNumber) Swap(i, j int) { x[i], x[j] = x[j], x[i] }
+func (x byNumber) Less(i, j int) bool {
+	return lineNumber(x[i]) > lineNumber(x[j])
+}
+
+func lineNumber(s string) int {
+	n := 0
+	for j := 0; j < len(s) && '0' <= s[j] && s[j] <= '9'; j++ {
+		n = n*10 + int(s[j]-'0')
+	}
+	return n
+}
+
+type bySecondField []string
+
+func (x bySecondField) Len() int      { return len(x) }
+func (x bySecondField) Swap(i, j int) { x[i], x[j] = x[j], x[i] }
+func (x bySecondField) Less(i, j int) bool {
+	return skipField(x[i]) < skipField(x[j])
+}
+
+func skipField(s string) string {
+	i := strings.Index(s, "\t")
+	if i < 0 {
+		return s
+	}
+	for i < len(s) && s[i+1] == '\t' {
+		i++
+	}
+	return s[i:]
+}
+
 func (w *awin) loop() {
 	defer w.exit()
 	for e := range w.EventChan() {
@@ -620,6 +684,15 @@ func (w *awin) loop() {
 			}
 			if cmd == "New" {
 				w.createIssue()
+				break
+			}
+			if cmd == "Sort" {
+				if w.mode != modeQuery {
+					w.err("can only sort issue list windows")
+					break
+				}
+				w.sortByNumber = !w.sortByNumber
+				w.sort()
 				break
 			}
 			if strings.HasPrefix(cmd, "Search ") {

@@ -120,13 +120,16 @@
 // A search result window, opened by executing "Search <query>", displays a list of issues
 // matching a search query. It shows the query in a header line. For example:
 //
-//	Search: author:rsc
+//	Search author:rsc
 //
 //	9131	bench: no documentation
 //	599	cmd/5c, 5g, 8c, 8g: make 64-bit fields 64-bit aligned
 //	6699	cmd/5l: use m to store div/mod denominator
 //	4997	cmd/6a, cmd/8a: MOVL $x-8(SP) and LEAL x-8(SP) are different
 //	...
+//
+// Executing "Sort" in a search result window toggles between sorting by title
+// and sorting by decreasing issue number.
 //
 // Milestone List Window
 //
