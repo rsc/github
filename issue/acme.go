@@ -407,7 +407,7 @@ func (w *awin) load() {
 			}
 		}
 		if w.title == "search" {
-			w.Fprintf("body", "Search: %s\n\n", w.query)
+			w.Fprintf("body", "Search %s\n\n", w.query)
 		}
 		w.printTabbed(buf.String())
 		w.Ctl("clean")
