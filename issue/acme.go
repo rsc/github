@@ -28,10 +28,17 @@ func acmeMode() {
 	var dummy awin
 	dummy.prefix = "/issue/" + *project + "/"
 	if flag.NArg() > 0 {
+		// TODO(rsc): Without -a flag, the query is conatenated into one query.
+		// Decide which behavior should be used, and use it consistently.
 		for _, arg := range flag.Args() {
-			if !dummy.look(arg) {
-				dummy.newSearch("search", arg)
+			if dummy.look(arg) {
+				continue
 			}
+			if arg == "new" {
+				dummy.createIssue()
+				continue
+			}
+			dummy.newSearch("search", arg)
 		}
 	} else {
 		dummy.look("all")
@@ -44,6 +51,7 @@ const (
 	modeQuery
 	modeCreate
 	modeMilestone
+	modeBulk
 )
 
 type awin struct {
@@ -219,7 +227,11 @@ func (w *awin) look(text string) bool {
 }
 
 func (w *awin) setMilestone(milestone, text string) {
-	id := findMilestone(w, &milestone)
+	var buf bytes.Buffer
+	id := findMilestone(&buf, &milestone)
+	if buf.Len() > 0 {
+		w.err(strings.TrimSpace(buf.String()))
+	}
 	if id == nil {
 		return
 	}
@@ -276,6 +288,17 @@ func (w *awin) newIssue(title string, id int) {
 	go w.loop()
 }
 
+func (w *awin) newBulkEdit(body []byte) {
+	w = w.new("bulk-edit/")
+	w.mode = modeBulk
+	w.query = ""
+	w.Ctl("cleartag")
+	w.Fprintf("tag", " New Get Sort Search ")
+	w.Write("body", append([]byte("Loading...\n\n"), body...))
+	go w.load()
+	go w.loop()
+}
+
 func (w *awin) newMilestoneList() {
 	w = w.new("milestone")
 	w.mode = modeMilestone
@@ -292,7 +315,7 @@ func (w *awin) newSearch(title, query string) {
 	w.mode = modeQuery
 	w.query = query
 	w.Ctl("cleartag")
-	w.Fprintf("tag", " New Get Sort Search ")
+	w.Fprintf("tag", " New Get Bulk Sort Search ")
 	w.Write("body", []byte("Loading..."))
 	go w.load()
 	go w.loop()
@@ -411,6 +434,25 @@ func (w *awin) load() {
 		}
 		w.printTabbed(buf.String())
 		w.Ctl("clean")
+
+	case modeBulk:
+		stop := w.blinker()
+		body, err := w.ReadAll("body")
+		if err != nil {
+			w.err(fmt.Sprintf("%v", err))
+			stop()
+			break
+		}
+		base, original, err := bulkEditStartFromText(body)
+		stop()
+		if err != nil {
+			w.err(fmt.Sprintf("%v", err))
+			break
+		}
+		w.clear()
+		w.printTabbed(string(original))
+		w.Ctl("clean")
+		w.github = base
 	}
 
 	w.Addr("0")
@@ -441,32 +483,6 @@ func diff(line, field, old string) *string {
 	return &line
 }
 
-func diffList(line, field string, old []string) []string {
-	line = strings.TrimSpace(strings.TrimPrefix(line, field))
-	had := make(map[string]bool)
-	for _, f := range old {
-		had[f] = true
-	}
-	changes := false
-	for _, f := range strings.Fields(line) {
-		if !had[f] {
-			changes = true
-		}
-		delete(had, f)
-	}
-	if len(had) != 0 {
-		changes = true
-	}
-	if changes {
-		ret := strings.Fields(line)
-		if ret == nil {
-			ret = []string{}
-		}
-		return ret
-	}
-	return nil
-}
-
 func (w *awin) put() {
 	stop := w.blinker()
 	defer stop()
@@ -481,53 +497,12 @@ func (w *awin) put() {
 			w.err(fmt.Sprintf("Put: %v", err))
 			return
 		}
-		sdata := string(data)
-		off := 0
-		var edit github.IssueRequest
-		for _, line := range strings.SplitAfter(sdata, "\n") {
-			off += len(line)
-			line = strings.TrimSpace(line)
-			if line == "" {
-				break
-			}
-			switch {
-			case strings.HasPrefix(line, "#"):
-				continue
-
-			case strings.HasPrefix(line, "Title:"):
-				edit.Title = diff(line, "Title:", getString(old.Title))
-
-			case strings.HasPrefix(line, "State:"):
-				edit.State = diff(line, "State:", getString(old.State))
-
-			case strings.HasPrefix(line, "Assignee:"):
-				edit.Assignee = diff(line, "Assignee:", getUserLogin(old.Assignee))
-
-			case strings.HasPrefix(line, "Closed:"):
-				continue
-
-			case strings.HasPrefix(line, "Labels:"):
-				edit.Labels = diffList(line, "Labels:", getLabelNames(old.Labels))
-
-			case strings.HasPrefix(line, "Milestone:"):
-				edit.Milestone = findMilestone(w, diff(line, "Milestone:", getMilestoneTitle(old.Milestone)))
-
-			case strings.HasPrefix(line, "URL:"):
-				continue
-
-			default:
-				w.err(fmt.Sprintf("Put: unknown summary line: %s", line))
-			}
+		issue, err := writeIssue(old, data, false)
+		if err != nil {
+			w.err(err.Error())
+			return
 		}
-
 		if w.mode == modeCreate {
-			comment := strings.TrimSpace(sdata[off:])
-			edit.Body = &comment
-			issue, _, err := client.Issues.Create(projectOwner, projectRepo, &edit)
-			if err != nil {
-				w.err(fmt.Sprintf("Error creating issue: %v", err))
-				return
-			}
 			w.mode = modeSingle
 			w.id = getInt(issue.Number)
 			w.title = fmt.Sprint(w.id)
@@ -536,43 +511,26 @@ func (w *awin) put() {
 			all.m[w.title] = w
 			all.Unlock()
 			w.github = issue
-			w.load()
+		}
+		w.load()
+
+	case modeBulk:
+		data, err := w.ReadAll("body")
+		if err != nil {
+			w.err(fmt.Sprintf("Put: %v", err))
 			return
 		}
-
-		var comment string
-		i := strings.Index(sdata, "\nReported by ")
-		if i >= off {
-			comment = strings.TrimSpace(sdata[off:i])
-		}
-
-		failed := false
-		if comment != "" {
-			_, _, err := client.Issues.CreateComment(projectOwner, projectRepo, getInt(old.Number), &github.IssueComment{
-				Body: &comment,
-			})
-			if err != nil {
-				w.err(fmt.Sprintf("Error saving comment: %v", err))
-				failed = true
+		ids, err := bulkWriteIssue(w.github, data, func(s string) { w.err("Put: " + s) })
+		if err != nil {
+			errText := strings.Replace(err.Error(), "\n", "\t\n", -1)
+			if len(ids) > 0 {
+				w.err(fmt.Sprintf("updated %d issue%s with errors:\n\t%v", len(ids), suffix(len(ids)), errText))
+				break
 			}
+			w.err(fmt.Sprintf("%s", errText))
+			break
 		}
-
-		if edit.Title != nil || edit.State != nil || edit.Assignee != nil || edit.Labels != nil || edit.Milestone != nil {
-			_, _, err := client.Issues.Edit(projectOwner, projectRepo, getInt(old.Number), &edit)
-			if err != nil {
-				w.err(fmt.Sprintf("Error changing issue: %v", err))
-				if !failed {
-					w.err("(Comment saved; only metadata failed to update.)\n")
-				}
-				failed = true
-			} else if failed {
-				w.err("(Metadata changes made; only comment failed to save.)\n")
-			}
-		}
-
-		if !failed {
-			w.load()
-		}
+		w.err(fmt.Sprintf("updated %d issue%s", len(ids), suffix(len(ids))))
 
 	case modeMilestone:
 		w.err("cannot Put milestone list")
@@ -695,6 +653,24 @@ func (w *awin) loop() {
 				w.sort()
 				break
 			}
+			if cmd == "Bulk" {
+				// TODO(rsc): If Bulk has an argument, treat as search query and use results?
+				if w.mode != modeQuery {
+					w.err("can only start bulk edit in issue list windows")
+					break
+				}
+				text := w.selection()
+				if text == "" {
+					data, err := w.ReadAll("body")
+					if err != nil {
+						w.err(fmt.Sprintf("%v", err))
+						break
+					}
+					text = string(data)
+				}
+				w.newBulkEdit([]byte(text))
+				break
+			}
 			if strings.HasPrefix(cmd, "Search ") {
 				w.newSearch("search", strings.TrimSpace(strings.TrimPrefix(cmd, "Search")))
 				break
@@ -706,6 +682,7 @@ func (w *awin) loop() {
 			}
 			w.WriteEvent(e)
 		case 'l', 'L': // look
+			// TODO(rsc): Expand selection, especially for URLs.
 			w.loadText(e)
 			if !w.look(string(e.Text)) {
 				w.WriteEvent(e)
@@ -716,71 +693,69 @@ func (w *awin) loop() {
 
 func (w *awin) printTabbed(text string) {
 	lines := strings.SplitAfter(text, "\n")
-	var rows [][]string
+	var allRows [][]string
 	for _, line := range lines {
 		if line == "" {
 			continue
 		}
 		line = strings.TrimSuffix(line, "\n")
-		rows = append(rows, strings.Split(line, "\t"))
-	}
-
-	var wid []int
-
-	if w.font != nil {
-		for _, row := range rows {
-			for len(wid) < len(row) {
-				wid = append(wid, 0)
-			}
-			for i, col := range row {
-				n := w.font.StringWidth(col)
-				if wid[i] < n {
-					wid[i] = n
-				}
-			}
-		}
+		allRows = append(allRows, strings.Split(line, "\t"))
 	}
 
 	var buf bytes.Buffer
-	for _, row := range rows {
-		for i, col := range row {
-			buf.WriteString(col)
-			if i == len(row)-1 {
-				break
+	for len(allRows) > 0 {
+		if row := allRows[0]; len(row) <= 1 {
+			if len(row) > 0 {
+				buf.WriteString(row[0])
 			}
-			if w.font == nil || w.tab == 0 {
-				buf.WriteString("\t")
-				continue
-			}
-			pos := w.font.StringWidth(col)
-			for pos <= wid[i] {
-				buf.WriteString("\t")
-				pos += w.tab - pos%w.tab
+			buf.WriteString("\n")
+			allRows = allRows[1:]
+			continue
+		}
+
+		i := 0
+		for i < len(allRows) && len(allRows[i]) > 1 {
+			i++
+		}
+
+		rows := allRows[:i]
+		allRows = allRows[i:]
+
+		var wid []int
+
+		if w.font != nil {
+			for _, row := range rows {
+				for len(wid) < len(row) {
+					wid = append(wid, 0)
+				}
+				for i, col := range row {
+					n := w.font.StringWidth(col)
+					if wid[i] < n {
+						wid[i] = n
+					}
+				}
 			}
 		}
-		buf.WriteString("\n")
+
+		for _, row := range rows {
+			for i, col := range row {
+				buf.WriteString(col)
+				if i == len(row)-1 {
+					break
+				}
+				if w.font == nil || w.tab == 0 {
+					buf.WriteString("\t")
+					continue
+				}
+				pos := w.font.StringWidth(col)
+				for pos <= wid[i] {
+					buf.WriteString("\t")
+					pos += w.tab - pos%w.tab
+				}
+			}
+			buf.WriteString("\n")
+		}
 	}
 
 	w.Write("body", buf.Bytes())
-}
-
-func findMilestone(w *awin, name *string) *int {
-	if name == nil {
-		return nil
-	}
-
-	all, err := loadMilestones()
-	if err != nil {
-		w.err(fmt.Sprintf("Error loading milestone list: %v\n\tIgnoring milestone change.\n", err))
-		return nil
-	}
-
-	for _, m := range all {
-		if getString(m.Title) == *name {
-			return m.Number
-		}
-	}
-
-	w.err(fmt.Sprintf("Ignoring unknown milestone: %s\n", *name))
-	return nil
 }

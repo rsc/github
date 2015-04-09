@@ -2,9 +2,9 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Issue is a client for reading GitHub project issues.
+// Issue is a client for reading and updating issues in a GitHub project issue tracker.
 //
-//	usage: issue [-a] [-p owner/repo] <query>
+//	usage: issue [-a] [-e] [-p owner/repo] <query>
 //
 // Issue runs the query against the given project's issue tracker and
 // prints a table of matching issues, sorted by issue summary.
@@ -31,7 +31,7 @@
 // if you want to work with issue trackers for private repositories.
 // It does not need any other permissions.
 //
-// Acme
+// Acme Editor Integration
 //
 // If the -a flag is specified, issue runs as a collection of acme windows
 // instead of a command-line tool. In this mode, the query is optional.
@@ -131,6 +131,39 @@
 // Executing "Sort" in a search result window toggles between sorting by title
 // and sorting by decreasing issue number.
 //
+// Bulk Edit Window
+//
+// Executing "Bulk" in an issue list or search result window opens a new
+// bulk edit window applying to the displayed issues. If there is a non-empty
+// text selection in the issue list or search result list, the bulk edit window
+// is restricted to issues in the selection.
+//
+// The bulk edit window consists of a metadata header followed by a list of issues, like:
+//
+//	State: open
+//	Assignee:
+//	Labels:
+//	Milestone: Go1.4.3
+//
+//	10219	cmd/gc: internal compiler error: agen: unknown op
+//	9711	net/http: Testing timeout on Go1.4.1
+//	9576	runtime: crash in checkdead
+//	9954	runtime: invalid heap pointer found in bss on openbsd/386
+//
+// The metadata header shows only metadata shared by all the issues.
+// In the above example, all four issues are open and have milestone Go1.4.3,
+// but they have no common labels nor a common assignee.
+//
+// The bulk edit applies to the issues listed in the window text; adding or removing
+// issue lines changes the set of issues affected by Get or Put operations.
+//
+// Executing "Get" refreshes the metadata header and issue summaries.
+//
+// Executing "Put" updates all the listed issues. It applies any changes made to
+// the metadata header and, if any text has been entered between the header
+// and the first issue line, posts that text as a comment. If all operations succeed,
+// Put then refreshes the window as Get does.
+//
 // Milestone List Window
 //
 // The milestone list window, opened by loading any of the names
@@ -145,9 +178,27 @@
 // Loading one of the listed milestone names opens a search for issues
 // in that milestone.
 //
+// Alternate Editor Integration
+//
+// The -e flag enables basic editing of issues with editors other than acme.
+// The editor invoked is $VISUAL if set, $EDITOR if set, or else ed.
+// Issue prepares a textual representation of issue data in a temporary file,
+// opens that file in the editor, waits for the editor to exit, and then applies any
+// changes from the file to the actual issues.
+//
+// When <query> is a single number, issue -e edits a single issue.
+// See the ``Issue Window'' section above.
+//
+// If the <query> is the text "new", issue -e creates a new issue.
+// See the ``Issue Creation Window'' section above.
+//
+// Otherwise, for general queries, issue -e edits multiple issues in bulk.
+// See the ``Bulk Edit Window'' section above.
+//
 package main // import "rsc.io/github/issue"
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -159,6 +210,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/go-github/github"
@@ -166,15 +218,15 @@ import (
 )
 
 var (
-	acmeFlag = flag.Bool("a", false, "acme")
-
+	acmeFlag     = flag.Bool("a", false, "open in new acme window")
+	editFlag     = flag.Bool("e", false, "edit in system editor")
 	project      = flag.String("p", "golang/go", "GitHub owner/repo name")
 	projectOwner = ""
 	projectRepo  = ""
 )
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `usage: issue [-a] [-p owner/repo] <query>
+	fmt.Fprintf(os.Stderr, `usage: issue [-a] [-e] [-p owner/repo] <query>
 
 If query is a single number, prints the full history for the issue.
 Otherwise, prints a table of matching results.
@@ -191,7 +243,6 @@ func main() {
 	if flag.NArg() == 0 && !*acmeFlag {
 		usage()
 	}
-	q := strings.Join(flag.Args(), " ")
 
 	f := strings.Split(*project, "/")
 	if len(f) != 2 {
@@ -206,11 +257,40 @@ func main() {
 		acmeMode()
 	}
 
+	q := strings.Join(flag.Args(), " ")
+
+	if *editFlag && q == "new" {
+		editIssue([]byte(createTemplate), new(github.Issue))
+		return
+	}
+
 	n, _ := strconv.Atoi(q)
 	if n != 0 {
+		if *editFlag {
+			var buf bytes.Buffer
+			issue, err := showIssue(&buf, n)
+			if err != nil {
+				log.Fatal(err)
+			}
+			editIssue(buf.Bytes(), issue)
+			return
+		}
 		if _, err := showIssue(os.Stdout, n); err != nil {
 			log.Fatal(err)
 		}
+		return
+	}
+
+	if *editFlag {
+		all, err := searchIssues(q)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if len(all) == 0 {
+			log.Fatal("no issues matched search")
+		}
+		sort.Sort(issuesByTitle(all))
+		bulkEditIssues(all)
 		return
 	}
 
@@ -224,6 +304,7 @@ func showIssue(w io.Writer, n int) (*github.Issue, error) {
 	if err != nil {
 		return nil, err
 	}
+	updateIssueCache(issue)
 	return issue, printIssue(w, issue)
 }
 
@@ -276,31 +357,161 @@ func printIssue(w io.Writer, issue *github.Issue) error {
 }
 
 func showQuery(w io.Writer, q string) error {
-	var all []string
+	all, err := searchIssues(q)
+	if err != nil {
+		return err
+	}
+	sort.Sort(issuesByTitle(all))
+	for _, issue := range all {
+		fmt.Fprintf(w, "%v\t%v\n", getInt(issue.Number), getString(issue.Title))
+	}
+	return nil
+}
+
+type issuesByTitle []*github.Issue
+
+func (x issuesByTitle) Len() int      { return len(x) }
+func (x issuesByTitle) Swap(i, j int) { x[i], x[j] = x[j], x[i] }
+func (x issuesByTitle) Less(i, j int) bool {
+	if getString(x[i].Title) != getString(x[j].Title) {
+		return getString(x[i].Title) < getString(x[j].Title)
+	}
+	return getInt(x[i].Number) < getInt(x[j].Number)
+}
+
+func searchIssues(q string) ([]*github.Issue, error) {
+	if opt, ok := queryToListOptions(q); ok {
+		return listRepoIssues(opt)
+	}
+
+	var all []*github.Issue
 	for page := 1; ; {
+		// TODO(rsc): Rethink excluding pull requests.
 		x, resp, err := client.Search.Issues("type:issue state:open repo:"+*project+" "+q, &github.SearchOptions{
 			ListOptions: github.ListOptions{
 				Page:    page,
 				PerPage: 100,
 			},
 		})
-		if err != nil {
-			return err
+		for i := range x.Issues {
+			updateIssueCache(&x.Issues[i])
+			all = append(all, &x.Issues[i])
 		}
-		for _, issue := range x.Issues {
-			all = append(all, fmt.Sprintf("%s\t%d", getString(issue.Title), getInt(issue.Number)))
+		if err != nil {
+			return all, err
 		}
 		if resp.NextPage < page {
 			break
 		}
 		page = resp.NextPage
 	}
-	sort.Strings(all)
-	for _, s := range all {
-		i := strings.LastIndex(s, "\t")
-		fmt.Fprintf(w, "%s\t%s\n", s[i+1:], s[:i])
+	return all, nil
+}
+
+func queryToListOptions(q string) (opt github.IssueListByRepoOptions, ok bool) {
+	if strings.ContainsAny(q, `"'`) {
+		return
 	}
-	return nil
+	for _, f := range strings.Fields(q) {
+		i := strings.Index(f, ":")
+		if i < 0 {
+			return
+		}
+		key, val := f[:i], f[i+1:]
+		switch key {
+		default:
+			return
+		case "milestone":
+			if opt.Milestone != "" || val == "" {
+				return
+			}
+			id := findMilestone(ioutil.Discard, &val)
+			if id == nil {
+				return
+			}
+			opt.Milestone = fmt.Sprint(*id)
+		case "state":
+			if opt.State != "" || val == "" {
+				return
+			}
+			opt.State = val
+		case "assignee":
+			if opt.Assignee != "" || val == "" {
+				return
+			}
+			opt.Assignee = val
+		case "author":
+			if opt.Creator != "" || val == "" {
+				return
+			}
+			opt.Creator = val
+		case "mentions":
+			if opt.Mentioned != "" || val == "" {
+				return
+			}
+			opt.Mentioned = val
+		case "label":
+			if opt.Labels != nil || val == "" {
+				return
+			}
+			opt.Labels = strings.Split(val, ",")
+		case "sort":
+			if opt.Sort != "" || val == "" {
+				return
+			}
+			opt.Sort = val
+		case "updated":
+			if !opt.Since.IsZero() || !strings.HasPrefix(val, ">=") {
+				return
+			}
+			// TODO: Can set Since if we parse val[2:].
+			return
+		case "no":
+			switch val {
+			default:
+				return
+			case "milestone":
+				if opt.Milestone != "" {
+					return
+				}
+				opt.Milestone = "none"
+			}
+		}
+	}
+	return opt, true
+}
+
+func listRepoIssues(opt github.IssueListByRepoOptions) ([]*github.Issue, error) {
+	var all []*github.Issue
+	for page := 1; ; {
+		xopt := opt
+		xopt.ListOptions = github.ListOptions{
+			Page:    page,
+			PerPage: 100,
+		}
+		issues, resp, err := client.Issues.ListByRepo(projectOwner, projectRepo, &xopt)
+		for i := range issues {
+			updateIssueCache(&issues[i])
+			all = append(all, &issues[i])
+		}
+		if err != nil {
+			return all, err
+		}
+		if resp.NextPage < page {
+			break
+		}
+		page = resp.NextPage
+	}
+
+	// Filter out pull requests, since we cannot say type:issue like in searchIssues.
+	// TODO(rsc): Rethink excluding pull requests.
+	save := all[:0]
+	for _, issue := range all {
+		if issue.PullRequestLinks == nil {
+			save = append(save, issue)
+		}
+	}
+	return save, nil
 }
 
 func loadMilestones() ([]github.Milestone, error) {
@@ -415,5 +626,51 @@ func getLabelNames(x []github.Label) []string {
 	for _, lab := range x {
 		out = append(out, getString(lab.Name))
 	}
+	sort.Strings(out)
 	return out
+}
+
+var issueCache struct {
+	sync.Mutex
+	m map[int]*github.Issue
+}
+
+func updateIssueCache(issue *github.Issue) {
+	n := getInt(issue.Number)
+	if n == 0 {
+		return
+	}
+	issueCache.Lock()
+	if issueCache.m == nil {
+		issueCache.m = make(map[int]*github.Issue)
+	}
+	issueCache.m[n] = issue
+	issueCache.Unlock()
+}
+
+func bulkReadIssuesCached(ids []int) ([]*github.Issue, error) {
+	var all []*github.Issue
+	issueCache.Lock()
+	for _, id := range ids {
+		all = append(all, issueCache.m[id])
+	}
+	issueCache.Unlock()
+
+	var errbuf bytes.Buffer
+	for i, id := range ids {
+		if all[i] == nil {
+			issue, _, err := client.Issues.Get(projectOwner, projectRepo, id)
+			if err != nil {
+				fmt.Fprintf(&errbuf, "reading #%d: %v\n", id, err)
+				continue
+			}
+			updateIssueCache(issue)
+			all[i] = issue
+		}
+	}
+	var err error
+	if errbuf.Len() > 0 {
+		err = fmt.Errorf("%s", strings.TrimSpace(errbuf.String()))
+	}
+	return all, err
 }
