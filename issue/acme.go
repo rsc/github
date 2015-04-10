@@ -30,6 +30,7 @@ func acmeMode() {
 	if flag.NArg() > 0 {
 		// TODO(rsc): Without -a flag, the query is conatenated into one query.
 		// Decide which behavior should be used, and use it consistently.
+		// TODO(rsc): Block this look from doing the multiline selection mode?
 		for _, arg := range flag.Args() {
 			if dummy.look(arg) {
 				continue
@@ -179,6 +180,18 @@ func cachedMilestones() []github.Milestone {
 }
 
 func (w *awin) look(text string) bool {
+	ids := readBulkIDs([]byte(text))
+	if len(ids) > 0 {
+		for _, id := range ids {
+			text := fmt.Sprint(id)
+			if w.show(text) != nil {
+				continue
+			}
+			w.newIssue(text, id)
+		}
+		return true
+	}
+
 	if text == "all" {
 		if w.show("all") != nil {
 			return true
