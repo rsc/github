@@ -73,8 +73,8 @@ func runEditor(filename string) error {
 	// The magic list of characters and the idea of running
 	// sh -c this way is taken from git/run-command.c.
 	var cmd *exec.Cmd
-	if strings.Contains(ed, "|&;<>()$`\\\"' \t\n*?[#~=%") {
-		cmd = exec.Command("sh", "-c", ed+` "$@"`, filename)
+	if strings.ContainsAny(ed, "|&;<>()$`\\\"' \t\n*?[#~=%") {
+		cmd = exec.Command("sh", "-c", ed+` "$@"`, "$EDITOR", filename)
 	} else {
 		cmd = exec.Command(ed, filename)
 	}
@@ -319,7 +319,7 @@ func findMilestone(w io.Writer, name *string) *int {
 		}
 	}
 
-	fmt.Fprintf(w, "Ignoring unknown milestone: %s\n", *name)
+	fmt.Fprintf(w, "Unknown milestone: %s\n", *name)
 	return nil
 }
 
