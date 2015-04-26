@@ -55,12 +55,12 @@ func main() {
 	args = append(args, flag.Args()...)
 	data, err := exec.Command("cl", args...).CombinedOutput()
 	if err != nil {
-		log.Fatal("fetching CLs: %v\n%s", err, data)
+		log.Fatalf("fetching CLs: %v\n%s", err, data)
 	}
 
 	var cls []*CL
 	if err := json.Unmarshal(data, &cls); err != nil {
-		log.Fatal("parsing CLs: %v", err)
+		log.Fatalf("parsing CLs: %v", err)
 	}
 
 	tokenFile := os.Getenv("HOME") + "/.github-cl2issue-token"
