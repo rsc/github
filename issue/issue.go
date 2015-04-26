@@ -203,6 +203,8 @@ The -json flag causes issue to print the results in JSON format
 using these data structures:
 
 	type Issue struct {
+		Number    int
+		Ref       string
 		Title     string
 		State     string
 		Assignee  string
@@ -734,6 +736,8 @@ func bulkReadIssuesCached(ids []int) ([]*github.Issue, error) {
 // If you make changes to the structs, copy them back into the doc comment.
 
 type Issue struct {
+	Number    int
+	Ref       string
 	Title     string
 	State     string
 	Assignee  string
@@ -777,6 +781,8 @@ func showJSONList(all []*github.Issue) {
 
 func toJSON(issue *github.Issue) *Issue {
 	j := &Issue{
+		Number:    getInt(issue.Number),
+		Ref:       fmt.Sprintf("%s/%s#%d\n", projectOwner, projectRepo, getInt(issue.Number)),
 		Title:     getString(issue.Title),
 		State:     getString(issue.State),
 		Assignee:  getUserLogin(issue.Assignee),
