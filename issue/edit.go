@@ -189,25 +189,13 @@ func writeIssue(old *github.Issue, updated []byte, isBulk bool) (issue *github.I
 		}
 	}
 
-	if edit.Title != nil || edit.State != nil || edit.Assignee != nil || len(edit.Labels) > 0 || edit.Milestone != nil {
+	if edit.Title != nil || edit.State != nil || edit.Assignee != nil || edit.Labels != nil || edit.Milestone != nil {
 		_, _, err := client.Issues.Edit(projectOwner, projectRepo, getInt(old.Number), &edit)
 		if err != nil {
 			fmt.Fprintf(&errbuf, "error changing metadata: %v\n", err)
 			failed = true
 		} else {
 			did = append(did, "updated metadata")
-		}
-	}
-	if edit.Labels != nil && len(edit.Labels) == 0 {
-		// Work around https://github.com/google/go-github/issues/181
-		// Note that if this code is removed, the test for the previous block
-		// should change from len(edit.Labels) > 0 to edit.Labels != nil.
-		_, err := client.Issues.RemoveLabelsForIssue(projectOwner, projectRepo, getInt(old.Number))
-		if err != nil {
-			fmt.Fprintf(&errbuf, "error deleting labels: %v\n", err)
-			failed = true
-		} else {
-			did = append(did, "deleted labels")
 		}
 	}
 	if len(addLabels) > 0 {
@@ -254,7 +242,7 @@ func writeIssue(old *github.Issue, updated []byte, isBulk bool) (issue *github.I
 	return
 }
 
-func diffList(line, field string, old []string) []string {
+func diffList(line, field string, old []string) *[]string {
 	line = strings.TrimSpace(strings.TrimPrefix(line, field))
 	had := make(map[string]bool)
 	for _, f := range old {
@@ -275,7 +263,7 @@ func diffList(line, field string, old []string) []string {
 		if ret == nil {
 			ret = []string{}
 		}
-		return ret
+		return &ret
 	}
 	return nil
 }
