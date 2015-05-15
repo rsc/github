@@ -168,6 +168,14 @@ func fetchData() {
 	}
 
 	readJSON(&cls, "CLs", "cl", "-json")
+	var open []*CL
+	for _, cl := range cls {
+		if !cl.Closed {
+			open = append(open, cl)
+		}
+	}
+	cls = open
+
 	if !*flagCL {
 		readJSON(&issues, Release+" issues", "issue", "-json", "milestone:"+Release)
 		readJSON(&maybe, Release+"Maybe issues", "issue", "-json", "milestone:"+Release+"Maybe")
@@ -197,7 +205,6 @@ func readJSON(dst interface{}, desc string, cmd ...string) {
 			log.Fatalf("%s not cached", desc)
 		}
 	} else {
-		log.Printf("RUN %q", cmd)
 		var err error
 		data, err = exec.Command(cmd[0], cmd[1:]...).CombinedOutput()
 		if err != nil {
