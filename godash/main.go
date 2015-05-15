@@ -55,6 +55,7 @@ type CL struct {
 	Project            string
 	Author             string
 	Reviewer           string
+	ReviewerEmail      string
 	NeedsReview        bool
 	NeedsReviewChanged time.Time
 	Start              time.Time
@@ -457,7 +458,11 @@ func (cl *CL) Status() string {
 	if rev == "" {
 		rev = "???"
 	}
-	fmt.Fprintf(&buf, "%s → %s, %d/%d days, waiting for %s", cl.Author, rev, int(now.Sub(cl.NeedsReviewChanged).Seconds()/86400), int(now.Sub(cl.Start).Seconds()/86400), who)
+	score := ""
+	if x := cl.Scores[cl.ReviewerEmail]; x != 0 {
+		score = fmt.Sprintf("%+d", x)
+	}
+	fmt.Fprintf(&buf, "%s → %s%s, %d/%d days, waiting for %s", cl.Author, rev, score, int(now.Sub(cl.NeedsReviewChanged).Seconds()/86400), int(now.Sub(cl.Start).Seconds()/86400), who)
 	for _, id := range cl.Issues {
 		fmt.Fprintf(&buf, " #%d", id)
 	}
