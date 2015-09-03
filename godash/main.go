@@ -6,7 +6,7 @@
 //
 // Usage:
 //
-//	godash [-cl] [-html] [-rcache] [-wcache]
+//	godash [-cl] [-rcache] [-wcache]
 //
 // By default, godash prints a textual release dashboard to standard output.
 // The release dashboard shows all open issues in the milestones for the upcoming
@@ -33,6 +33,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/md5"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -47,7 +48,13 @@ import (
 	"time"
 )
 
-const Release = "Go1.5"
+const PointRelease = "Go1.5.1"
+const Release = "Go1.6"
+
+const (
+	ProposalDir = "Pending Proposals"
+	ClosedsDir  = "Closed Last Week"
+)
 
 type CL struct {
 	Number             int
@@ -63,6 +70,7 @@ type CL struct {
 	Closed             bool
 	Scores             map[string]int
 	Files              []string
+	GerritStatus       string `json:"Status"`
 }
 
 type Issue struct {
@@ -71,6 +79,7 @@ type Issue struct {
 	Labels    []string
 	Assignee  string
 	Milestone string
+	State     string
 }
 
 type Group struct {
@@ -84,17 +93,26 @@ type Item struct {
 }
 
 var (
-	cls    []*CL
-	issues []*Issue
-	maybe  []*Issue
-	groups []*Group
-	output bytes.Buffer
-	skipCL int
+	cls           []*CL
+	issues        []*Issue
+	early         []*Issue
+	pointrelease  []*Issue
+	maybe         []*Issue
+	proposals     []*Issue
+	closeds       []*Issue
+	groups        []*Group
+	proposalGroup *Group
+	closedsGroup  *Group
+	output        bytes.Buffer
+	skipCL        int
 
 	now = time.Now()
 
+	days = flag.Int("days", 7, "number of days back")
+
 	flagCL   = flag.Bool("cl", false, "print CLs only (no issues)")
 	flagHTML = flag.Bool("html", false, "print HTML output")
+	flagMail = flag.Bool("mail", false, "generate weekly mail")
 
 	cache      = map[string]string{}
 	cacheFile  = os.Getenv("HOME") + "/.godash-cache"
@@ -109,13 +127,21 @@ func main() {
 	if flag.NArg() != 0 {
 		flag.Usage()
 	}
+	if *flagMail {
+		*flagHTML = true
+	}
 	fetchData()
 	groupData()
-	what := "release"
-	if *flagCL {
-		what = "CL"
+
+	if *flagMail {
+		fmt.Fprintf(&output, "Go weekly status report\n")
+	} else {
+		what := "release"
+		if *flagCL {
+			what = "CL"
+		}
+		fmt.Fprintf(&output, "Go %s dashboard\n", what)
 	}
-	fmt.Fprintf(&output, "Go %s dashboard\n", what)
 	fmt.Fprintf(&output, "%v\n\n", time.Now().UTC().Format(time.UnixDate))
 	if *flagHTML {
 		fmt.Fprintf(&output, "HOWTO\n\n")
@@ -123,9 +149,59 @@ func main() {
 	if *flagCL {
 		fmt.Fprintf(&output, "%d CLs\n", len(cls)-skipCL)
 	} else {
-		fmt.Fprintf(&output, "%d %s + %d %sMaybe + %d CLs\n", len(issues)-len(maybe), Release, len(maybe), Release, len(cls)-skipCL)
+		extra := ""
+		if *flagMail {
+			numProposal := 0
+			numClosed := 0
+			if proposalGroup != nil {
+				numProposal = len(proposalGroup.Items)
+			}
+			if closedsGroup != nil {
+				numClosed = len(closedsGroup.Items)
+			}
+			extra = fmt.Sprintf(" + %d proposals + %d closed last week\n", numProposal, numClosed)
+		}
+		fmt.Fprintf(&output, "%d %s + %d %sEarly + %d %s + %d %sMaybe + %d CLs%s\n",
+			len(pointrelease), PointRelease,
+			len(early), Release,
+			len(issues)-len(early)-len(maybe), Release,
+			len(maybe), Release,
+			len(cls)-skipCL,
+			extra)
 	}
-	printGroups()
+	if len(pointrelease) > 0 {
+		fmt.Fprintf(&output, "\n%s\n", PointRelease)
+		printGroups(groups, func(item *Item) bool { return item.Issue != nil && item.Issue.Milestone == PointRelease })
+	}
+	if len(early) > 0 {
+		fmt.Fprintf(&output, "\n%sEarly\n", Release)
+		printGroups(groups, func(item *Item) bool { return item.Issue != nil && item.Issue.Milestone == Release+"Early" })
+	}
+	if len(issues) > 0 {
+		fmt.Fprintf(&output, "\n%s\n", Release)
+		printGroups(groups, func(item *Item) bool { return item.Issue != nil && item.Issue.Milestone == Release })
+	}
+	if len(maybe) > 0 {
+		fmt.Fprintf(&output, "\n%sMaybe\n", Release)
+		printGroups(groups, func(item *Item) bool { return item.Issue != nil && item.Issue.Milestone == Release+"Maybe" })
+	}
+	if len(cls) > 0 {
+		for _, g := range groups {
+			for _, it := range g.Items {
+				it.Issue = nil
+			}
+		}
+		fmt.Fprintf(&output, "\n%sMaybe\n", Release)
+		printGroups(groups, func(item *Item) bool { return len(item.CLs) > 0 })
+	}
+
+	if proposalGroup != nil {
+		printGroups([]*Group{proposalGroup}, func(*Item) bool { return true })
+		fmt.Fprintf(&output, "\n")
+	}
+	if closedsGroup != nil {
+		printGroups([]*Group{closedsGroup}, func(*Item) bool { return true })
+	}
 	if *flagHTML {
 		printHTML()
 		return
@@ -139,22 +215,37 @@ func printHTML() {
 	if i < 0 {
 		i = len(data)
 	}
+	if *flagMail {
+		fmt.Printf("Subject: Go weekly report for %s\n", time.Now().Format("2006-01-02"))
+		fmt.Printf("From: \"Gopher Robot\" <gobot@golang.org>\n")
+		fmt.Printf("To: golang-dev@googlegroups.com\n")
+		fmt.Printf("Message-Id: <godash.%x@golang.org>\n", md5.Sum([]byte(data)))
+		fmt.Printf("Content-Type: text/html; charset=utf-8\n")
+		fmt.Printf("\n")
+	}
 	fmt.Printf("<html>\n")
+	fmt.Printf("<meta charset=\"UTF-8\">\n")
 	fmt.Printf("<title>%s</title>\n", data[:i])
 	fmt.Printf("<style>\n")
-	fmt.Printf(".maybe {color: #777}\n")
+	fmt.Printf(".early {}\n")
+	fmt.Printf(".maybe {}\n")
 	fmt.Printf(".late {color: #700; text-decoration: underline;}\n")
+	fmt.Printf(".closed {background-color: #eee;}\n")
+	fmt.Printf("hr {border: none; border-top: 2px solid #000; height: 5px; border-bottom: 1px solid #000;}\n")
 	fmt.Printf("</style>\n")
 	fmt.Printf("<pre>\n")
 	data = regexp.MustCompile(`(?m)^HOWTO`).ReplaceAllString(data, `<a target="_blank" href="index.html">about the dashboard</a>`)
 	data = regexp.MustCompile(`(CL (\d+))\b`).ReplaceAllString(data, "<a target=\"_blank\" href='https://golang.org/cl/$2'>$1</a>")
 	data = regexp.MustCompile(`(#(\d\d\d+))\b`).ReplaceAllString(data, "<a target=\"_blank\" href='https://golang.org/issue/$2'>$1</a>")
+	data = regexp.MustCompile(`(?m)^(Closed Last Week|Pending Proposals|Go[\?A-Za-z0-9][^\n]*)`).ReplaceAllString(data, "<hr><b><font size='+1'>$1</font></b>")
 	data = regexp.MustCompile(`(?m)^([\?A-Za-z0-9][^\n]*)`).ReplaceAllString(data, "<b>$1</b>")
+	data = regexp.MustCompile(`(?m)^([^\n]*\[early[^\n]*)`).ReplaceAllString(data, "<span class='early'>$1</span>")
 	data = regexp.MustCompile(`(?m)^([^\n]*\[maybe[^\n]*)`).ReplaceAllString(data, "<span class='maybe'>$1</span>")
 	data = regexp.MustCompile(`(?m)^( +)(.*)( → )(.*)(, [\d/]+ days)(, waiting for reviewer)`).ReplaceAllString(data, "$1$2$3<b>$4</b>$5$6")
 	data = regexp.MustCompile(`(?m)^( +)(.*)( → )(.*)(, [\d/]+ days)(, waiting for author)`).ReplaceAllString(data, "$1<b>$2</b>$3$4$5$6")
 	data = regexp.MustCompile(`(→ )(.*, \d\d+)(/\d+ days)(, waiting for reviewer)`).ReplaceAllString(data, "$1<b class='late'>$2</b>$3$4")
 	fmt.Printf("%s\n", data)
+	fmt.Printf("</pre>\n")
 }
 
 func fetchData() {
@@ -168,20 +259,49 @@ func fetchData() {
 		}
 	}
 
+	since := time.Now().Add(-(time.Duration(*days)*24 + 12) * time.Hour).UTC().Round(time.Second)
 	readJSON(&cls, "CLs", "cl", "-json")
 	var open []*CL
 	for _, cl := range cls {
-		if !cl.Closed {
+		if !cl.Closed && (*flagCL || !strings.HasPrefix(cl.Subject, "[dev.")) {
 			open = append(open, cl)
 		}
+	}
+	if *flagMail {
+		cls = nil
+		readJSON(&cls, "CLs Merged", "cl", "-json", "is:merged since:\""+since.Format("2006-01-02 15:04:05")+"\"")
+		open = append(open, cls...)
 	}
 	cls = open
 
 	if !*flagCL {
+		readJSON(&pointrelease, PointRelease+" issues", "issue", "-json", "milestone:"+PointRelease)
 		readJSON(&issues, Release+" issues", "issue", "-json", "milestone:"+Release)
+		readJSON(&early, Release+"Early issues", "issue", "-json", "milestone:"+Release+"Early")
 		readJSON(&maybe, Release+"Maybe issues", "issue", "-json", "milestone:"+Release+"Maybe")
+		readJSON(&proposals, "Proposals", "issue", "-json", "label:Proposal")
+		readJSON(&closeds, "Closed", "issue", "-json", "is:closed closed:>="+since.Format(time.RFC3339))
 	}
-	issues = append(issues, maybe...)
+
+	seen := map[int]bool{}
+	for _, issue := range issues {
+		seen[issue.Number] = true
+	}
+
+	add := func(new []*Issue) {
+		for _, issue := range new {
+			if !seen[issue.Number] {
+				issues = append(issues, issue)
+				seen[issue.Number] = true
+			}
+		}
+	}
+
+	add(pointrelease)
+	add(early)
+	add(maybe)
+	add(proposals)
+	add(closeds)
 
 	if *writeCache {
 		flushCache()
@@ -199,6 +319,7 @@ func flushCache() {
 }
 
 func readJSON(dst interface{}, desc string, cmd ...string) {
+	fmt.Fprintf(os.Stderr, "%s => %v\n", desc, cmd)
 	var data []byte
 	if *readCache {
 		data = []byte(cache[desc])
@@ -265,19 +386,38 @@ func groupData() {
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		groups = append(groups, groupsByDir[key])
+		g := groupsByDir[key]
+		switch key {
+		case ProposalDir:
+			proposalGroup = g
+		case ClosedsDir:
+			closedsGroup = g
+		default:
+			groups = append(groups, g)
+		}
 	}
 }
 
-func printGroups() {
+func printGroups(groups []*Group, match func(*Item) bool) {
 	for _, g := range groups {
-		fmt.Fprintf(&output, "\n%s\n", g.Dir)
+		var header func()
+		header = func() {
+			fmt.Fprintf(&output, "\n%s\n", g.Dir)
+			header = func() {}
+		}
 		for _, item := range g.Items {
+			if !match(item) {
+				continue
+			}
 			prefix := ""
 			if item.Issue != nil {
+				header()
 				fmt.Fprintf(&output, "    %-10s  %s", fmt.Sprintf("#%d", item.Issue.Number), item.Issue.Title)
 				prefix = "\u2937 "
 				var tags []string
+				if strings.HasSuffix(item.Issue.Milestone, "Early") {
+					tags = append(tags, "early")
+				}
 				if strings.HasSuffix(item.Issue.Milestone, "Maybe") {
 					tags = append(tags, "maybe")
 				}
@@ -290,6 +430,12 @@ func printGroups() {
 						tags = append(tags, "test")
 					case "Started":
 						tags = append(tags, strings.ToLower(label))
+					case "Proposal":
+						tags = append(tags, "proposal")
+					case "Proposal-Accepted":
+						tags = append(tags, "proposal-accepted")
+					case "Proposal-Declined":
+						tags = append(tags, "proposal-declined")
 					}
 				}
 				if len(tags) > 0 {
@@ -298,6 +444,7 @@ func printGroups() {
 				fmt.Fprintf(&output, "\n")
 			}
 			for _, cl := range item.CLs {
+				header()
 				fmt.Fprintf(&output, "    %-10s  %s%s\n", fmt.Sprintf("%sCL %d", prefix, cl.Number), prefix, cl.Subject)
 				if *flagCL {
 					fmt.Fprintf(&output, "    %-10s      %s\n", "", cl.Status())
@@ -314,6 +461,9 @@ var okDesc = map[string]bool{
 
 func (item *Item) Dir() string {
 	for _, cl := range item.CLs {
+		if cl.GerritStatus == "merged" {
+			return ClosedsDir
+		}
 		dirs := cl.Dirs()
 		desc := titleDir(cl.Subject)
 
@@ -338,12 +488,27 @@ func (item *Item) Dir() string {
 		return desc
 	}
 	if item.Issue != nil {
+		if item.Issue.State == "closed" {
+			return ClosedsDir
+		}
+		if hasLabel(item.Issue, "Proposal") {
+			return ProposalDir
+		}
 		if dir := titleDir(item.Issue.Title); dir != "" {
 			return dir
 		}
 		return "?"
 	}
 	return "?"
+}
+
+func hasLabel(issue *Issue, label string) bool {
+	for _, lab := range issue.Labels {
+		if label == lab {
+			return true
+		}
+	}
+	return false
 }
 
 func titleDir(title string) string {
