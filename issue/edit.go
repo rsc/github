@@ -462,8 +462,9 @@ func bulkWriteIssue(old *github.Issue, updated []byte, status func(string)) (ids
 		}
 		// Check rate limits here (in contrast to everywhere else in this program)
 		// to avoid needless failure halfway through the loop.
-		for client.Rate.Limit > 0 && client.Rate.Remaining == 0 {
-			delta := (client.Rate.Reset.Sub(time.Now())/time.Minute + 2) * time.Minute
+		rate := client.Rate()
+		for rate.Limit > 0 && rate.Remaining == 0 {
+			delta := (rate.Reset.Sub(time.Now())/time.Minute + 2) * time.Minute
 			if delta < 0 {
 				delta = 2 * time.Minute
 			}
