@@ -255,6 +255,7 @@ var (
 	editFlag     = flag.Bool("e", false, "edit in system editor")
 	jsonFlag     = flag.Bool("json", false, "write JSON output")
 	project      = flag.String("p", "golang/go", "GitHub owner/repo name")
+	rawFlag      = flag.Bool("raw", false, "do no processing of markdown")
 	tokenFile    = flag.String("token", "", "read GitHub token personal access token from `file` (default $HOME/.github-issue-token)")
 	projectOwner = ""
 	projectRepo  = ""
@@ -371,11 +372,17 @@ func printIssue(w io.Writer, issue *github.Issue) error {
 
 	fmt.Fprintf(w, "\nReported by %s (%s)\n", getUserLogin(issue.User), getTime(issue.CreatedAt).Format(timeFormat))
 	if issue.Body != nil {
-		text := strings.TrimSpace(*issue.Body)
-		if text != "" {
-			fmt.Fprintf(w, "\n\t%s\n", wrap(text, "\t"))
+		if *rawFlag {
+			fmt.Fprintf(w, "\n%s\n\n", *issue.Body)
+		} else {
+			text := strings.TrimSpace(*issue.Body)
+			if text != "" {
+				fmt.Fprintf(w, "\n\t%s\n", wrap(text, "\t"))
+			}
 		}
 	}
+
+	var output []string
 
 	for page := 1; ; {
 		list, resp, err := client.Issues.ListComments(projectOwner, projectRepo, getInt(issue.Number), &github.IssueListCommentsOptions{
@@ -385,13 +392,21 @@ func printIssue(w io.Writer, issue *github.Issue) error {
 			},
 		})
 		for _, com := range list {
+			var buf bytes.Buffer
+			w := &buf
+			fmt.Fprintf(w, "%s\n", getTime(com.CreatedAt).Format(time.RFC3339))
 			fmt.Fprintf(w, "\nComment by %s (%s)\n", getUserLogin(com.User), getTime(com.CreatedAt).Format(timeFormat))
 			if com.Body != nil {
-				text := strings.TrimSpace(*com.Body)
-				if text != "" {
-					fmt.Fprintf(w, "\n\t%s\n", wrap(text, "\t"))
+				if *rawFlag {
+					fmt.Fprintf(w, "\n%s\n\n", *com.Body)
+				} else {
+					text := strings.TrimSpace(*com.Body)
+					if text != "" {
+						fmt.Fprintf(w, "\n\t%s\n", wrap(text, "\t"))
+					}
 				}
 			}
+			output = append(output, buf.String())
 		}
 		if err != nil {
 			return err
@@ -401,6 +416,70 @@ func printIssue(w io.Writer, issue *github.Issue) error {
 		}
 		page = resp.NextPage
 	}
+
+	for page := 1; ; {
+		list, resp, err := client.Issues.ListIssueEvents(projectOwner, projectRepo, getInt(issue.Number), &github.ListOptions{
+			Page:    page,
+			PerPage: 100,
+		})
+		for _, ev := range list {
+			var buf bytes.Buffer
+			w := &buf
+			fmt.Fprintf(w, "%s\n", getTime(ev.CreatedAt).Format(time.RFC3339))
+			switch event := getString(ev.Event); event {
+			case "mentioned", "subscribed", "unsubscribed":
+				// ignore
+			default:
+				fmt.Fprintf(w, "\n* %s %s (%s)\n", getUserLogin(ev.Actor), event, getTime(ev.CreatedAt).Format(timeFormat))
+			case "closed", "referenced", "merged":
+				id := getString(ev.CommitID)
+				if id != "" {
+					if len(id) > 7 {
+						id = id[:7]
+					}
+					id = " in commit " + id
+				}
+				fmt.Fprintf(w, "\n* %s %s%s (%s)\n", getUserLogin(ev.Actor), event, id, getTime(ev.CreatedAt).Format(timeFormat))
+				if id != "" {
+					commit, _, err := client.Git.GetCommit(projectOwner, projectRepo, *ev.CommitID)
+					if err == nil {
+						fmt.Fprintf(w, "\n\tAuthor: %s <%s> %s\n\tCommitter: %s <%s> %s\n\n\t%s\n",
+							getString(commit.Author.Name), getString(commit.Author.Email), getTime(commit.Author.Date).Format(timeFormat),
+							getString(commit.Committer.Name), getString(commit.Committer.Email), getTime(commit.Committer.Date).Format(timeFormat),
+							wrap(getString(commit.Message), "\t"))
+					}
+				}
+			case "assigned", "unassigned":
+				fmt.Fprintf(w, "\n* %s %s %s (%s)\n", getUserLogin(ev.Actor), event, getUserLogin(ev.Assignee), getTime(ev.CreatedAt).Format(timeFormat))
+			case "labeled", "unlabeled":
+				fmt.Fprintf(w, "\n* %s %s %s (%s)\n", getUserLogin(ev.Actor), event, getString(ev.Label.Name), getTime(ev.CreatedAt).Format(timeFormat))
+			case "milestoned", "demilestoned":
+				if event == "milestoned" {
+					event = "added to milestone"
+				} else {
+					event = "removed from milestone"
+				}
+				fmt.Fprintf(w, "\n* %s %s %s (%s)\n", getUserLogin(ev.Actor), event, getString(ev.Milestone.Title), getTime(ev.CreatedAt).Format(timeFormat))
+			case "renamed":
+				fmt.Fprintf(w, "\n* %s changed title (%s)\n  - %s\n  + %s\n", getUserLogin(ev.Actor), getTime(ev.CreatedAt).Format(timeFormat), getString(ev.Rename.From), getString(ev.Rename.To))
+			}
+			output = append(output, buf.String())
+		}
+		if err != nil {
+			return err
+		}
+		if resp.NextPage < page {
+			break
+		}
+		page = resp.NextPage
+	}
+
+	sort.Strings(output)
+	for _, s := range output {
+		i := strings.Index(s, "\n")
+		fmt.Fprintf(w, "%s", s[i+1:])
+	}
+
 	return nil
 }
 
@@ -583,16 +662,20 @@ func loadMilestones() ([]github.Milestone, error) {
 func wrap(t string, prefix string) string {
 	out := ""
 	t = strings.Replace(t, "\r\n", "\n", -1)
+	max := 70
+	if *acmeFlag {
+		max = 120
+	}
 	lines := strings.Split(t, "\n")
 	for i, line := range lines {
 		if i > 0 {
 			out += "\n" + prefix
 		}
 		s := line
-		for len(s) > 70 {
-			i := strings.LastIndex(s[:70], " ")
+		for len(s) > max {
+			i := strings.LastIndex(s[:max], " ")
 			if i < 0 {
-				i = 69
+				i = max - 1
 			}
 			i++
 			out += s[:i] + "\n" + prefix
@@ -668,7 +751,7 @@ func getTime(x *time.Time) time.Time {
 	if x == nil {
 		return time.Time{}
 	}
-	return *x
+	return (*x).Local()
 }
 
 func getMilestoneTitle(x *github.Milestone) string {
