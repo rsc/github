@@ -48,8 +48,8 @@ import (
 	"time"
 )
 
-const PointRelease = "Go1.5.1"
-const Release = "Go1.6"
+const PointRelease = "Go1.6.1"
+const Release = "Go1.7"
 
 const (
 	ProposalDir = "Pending Proposals"
@@ -191,7 +191,7 @@ func main() {
 				it.Issue = nil
 			}
 		}
-		fmt.Fprintf(&output, "\n%sMaybe\n", Release)
+		fmt.Fprintf(&output, "\nPending CLs\n")
 		printGroups(groups, func(item *Item) bool { return len(item.CLs) > 0 })
 	}
 
@@ -237,7 +237,7 @@ func printHTML() {
 	data = regexp.MustCompile(`(?m)^HOWTO`).ReplaceAllString(data, `<a target="_blank" href="index.html">about the dashboard</a>`)
 	data = regexp.MustCompile(`(CL (\d+))\b`).ReplaceAllString(data, "<a target=\"_blank\" href='https://golang.org/cl/$2'>$1</a>")
 	data = regexp.MustCompile(`(#(\d\d\d+))\b`).ReplaceAllString(data, "<a target=\"_blank\" href='https://golang.org/issue/$2'>$1</a>")
-	data = regexp.MustCompile(`(?m)^(Closed Last Week|Pending Proposals|Go[\?A-Za-z0-9][^\n]*)`).ReplaceAllString(data, "<hr><b><font size='+1'>$1</font></b>")
+	data = regexp.MustCompile(`(?m)^(Closed Last Week|Pending Proposals|Pending CLs|Go[\?A-Za-z0-9][^\n]*)`).ReplaceAllString(data, "<hr><b><font size='+1'>$1</font></b>")
 	data = regexp.MustCompile(`(?m)^([\?A-Za-z0-9][^\n]*)`).ReplaceAllString(data, "<b>$1</b>")
 	data = regexp.MustCompile(`(?m)^([^\n]*\[early[^\n]*)`).ReplaceAllString(data, "<span class='early'>$1</span>")
 	data = regexp.MustCompile(`(?m)^([^\n]*\[maybe[^\n]*)`).ReplaceAllString(data, "<span class='maybe'>$1</span>")
