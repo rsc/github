@@ -622,8 +622,8 @@ func listRepoIssues(opt github.IssueListByRepoOptions) ([]*github.Issue, error) 
 		}
 		issues, resp, err := client.Issues.ListByRepo(projectOwner, projectRepo, &xopt)
 		for i := range issues {
-			updateIssueCache(&issues[i])
-			all = append(all, &issues[i])
+			updateIssueCache(issues[i])
+			all = append(all, issues[i])
 		}
 		if err != nil {
 			return all, err
@@ -645,7 +645,7 @@ func listRepoIssues(opt github.IssueListByRepoOptions) ([]*github.Issue, error) 
 	return save, nil
 }
 
-func loadMilestones() ([]github.Milestone, error) {
+func loadMilestones() ([]*github.Milestone, error) {
 	// NOTE(rsc): There appears to be no paging possible.
 	all, _, err := client.Issues.ListMilestones(projectOwner, projectRepo, &github.MilestoneListOptions{
 		State: "open",
@@ -654,7 +654,7 @@ func loadMilestones() ([]github.Milestone, error) {
 		return nil, err
 	}
 	if all == nil {
-		all = []github.Milestone{}
+		all = []*github.Milestone{}
 	}
 	return all, nil
 }

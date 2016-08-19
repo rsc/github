@@ -166,10 +166,10 @@ var numRE = regexp.MustCompile(`(?m)^#[0-9]+\t`)
 
 var milecache struct {
 	sync.Mutex
-	list []github.Milestone
+	list []*github.Milestone
 }
 
-func cachedMilestones() []github.Milestone {
+func cachedMilestones() []*github.Milestone {
 	milecache.Lock()
 	if milecache.list == nil {
 		milecache.list, _ = loadMilestones()
