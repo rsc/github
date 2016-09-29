@@ -149,7 +149,7 @@ func plotRelease(actions []action, maxIssue int, release string) {
 
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "var %sData = [", strings.Replace(release, ".", "", -1))
-	fmt.Fprintf(&buf, "  ['Date', '%s', '%s', '%s', 'No Milestone']", releaseEarly, release, releaseMaybe)
+	fmt.Fprintf(&buf, "  ['Date', 'No Milestone', '%s', '%s', '%s']", releaseEarly, release, releaseMaybe)
 	plot(actions, maxIssue, func(issues []issueState, time string) {
 		if time < minDate {
 			return
