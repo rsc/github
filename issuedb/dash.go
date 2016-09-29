@@ -1,3 +1,7 @@
+// Copyright 2016 The Go Authors.  All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
 package main
 
 import (
@@ -145,18 +149,20 @@ func plotRelease(actions []action, maxIssue int, release string) {
 
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "var %sData = [", strings.Replace(release, ".", "", -1))
-	fmt.Fprintf(&buf, "  ['Date', '%s', '%s', '%s']", releaseEarly, release, releaseMaybe)
+	fmt.Fprintf(&buf, "  ['Date', '%s', '%s', '%s', 'No Milestone']", releaseEarly, release, releaseMaybe)
 	plot(actions, maxIssue, func(issues []issueState, time string) {
 		if time < minDate {
 			return
 		}
-		var numRelease, numReleaseEarly, numReleaseMaybe int
+		var numNone, numRelease, numReleaseEarly, numReleaseMaybe int
 		for id := range issues {
 			issue := &issues[id]
 			if issue.createTime == "" || issue.closeTime != "" {
 				continue
 			}
 			switch issue.milestone {
+			case "":
+				numNone++
 			case release:
 				numRelease++
 			case releaseEarly:
@@ -165,7 +171,7 @@ func plotRelease(actions []action, maxIssue int, release string) {
 				numReleaseMaybe++
 			}
 		}
-		fmt.Fprintf(&buf, ",\n  [myDate(\"%s\"), %d, %d, %d]", time, numReleaseEarly, numRelease, numReleaseMaybe)
+		fmt.Fprintf(&buf, ",\n  [myDate(\"%s\"), %d, %d, %d, %d]", time, numNone, numReleaseEarly, numRelease, numReleaseMaybe)
 	})
 	fmt.Fprintf(&buf, "\n];\n\n")
 	os.Stdout.Write(buf.Bytes())
@@ -196,6 +202,9 @@ func plotNeeds(actions []action, maxIssue int) {
 		for id := range issues {
 			issue := &issues[id]
 			if issue.createTime == "" || issue.closeTime != "" {
+				continue
+			}
+			if issue.milestone != "" && !strings.HasPrefix(issue.milestone, "Go1.8") {
 				continue
 			}
 			ix := triage
