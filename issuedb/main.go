@@ -467,7 +467,8 @@ type ghIssue struct {
 	Milestone struct {
 		Title string `json:"title"`
 	} `json:"milestone"`
-	State string `json:"state"`
+	State       string    `json:"state"`
+	PullRequest *struct{} `json:"pull_request"`
 }
 
 func refill() {
@@ -578,6 +579,9 @@ func refill() {
 				h.Time = ev.CreatedAt // best we can do
 				h.Who = ev.User.Login
 				h.Action = "issue"
+				if ev.PullRequest != nil {
+					h.Action = "pullrequest"
+				}
 				h.Text = ev.Body
 				if err := storage.Insert(tx, &h); err != nil {
 					log.Fatal(err)

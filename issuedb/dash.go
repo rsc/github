@@ -62,7 +62,9 @@ func dashActions() ([]action, int) {
 			case "issue":
 				actions = append(actions, action{h.Time, opCreate, h.Issue, ""})
 			case "milestone?", "milestoned":
-				actions = append(actions, action{h.Time, opMilestone, h.Issue, h.Text})
+				if h.Text != "" {
+					actions = append(actions, action{h.Time, opMilestone, h.Issue, h.Text})
+				}
 			case "demilestoned":
 				actions = append(actions, action{h.Time, opDemilestone, h.Issue, h.Text})
 			case "close?", "closed":
@@ -162,6 +164,9 @@ func plotRelease(actions []action, maxIssue int, release string) {
 			}
 			switch issue.milestone {
 			case "":
+				if time == "2016-10-05" {
+					println("NONE", id)
+				}
 				numNone++
 			case release:
 				numRelease++
