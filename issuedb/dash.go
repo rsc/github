@@ -10,7 +10,9 @@ import (
 	"log"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 )
 
 type action struct {
@@ -42,41 +44,38 @@ type issueState struct {
 	waitingForInfo     bool
 }
 
-func dashActions() ([]action, int) {
+func dashActions(proj string) ([]action, int) {
 	var actions []action
 	var maxIssue int64
-	var last int64
-	for {
-		var all []History
-		if err := storage.Select(db, &all, "where RowID > ? order by RowID asc limit 100", last); err != nil {
-			log.Fatal("sql: %v", err)
+	rows, err := db.Query("select * from History where Project = ? order by Time", proj)
+	if err != nil {
+		log.Fatal("sql: %v", err)
+	}
+	for rows.Next() {
+		var h History
+		if err := rows.Scan(&h.URL, &h.Project, &h.Issue, &h.Time, &h.Who, &h.Action, &h.Text); err != nil {
+			log.Fatal("sql scan History: %v", err)
 		}
-		if len(all) == 0 {
-			break
+		if maxIssue < h.Issue {
+			maxIssue = h.Issue
 		}
-		for _, h := range all {
-			if maxIssue < h.Issue {
-				maxIssue = h.Issue
+		switch h.Action {
+		case "issue":
+			actions = append(actions, action{h.Time, opCreate, h.Issue, ""})
+		case "milestone?", "milestoned":
+			if h.Text != "" {
+				actions = append(actions, action{h.Time, opMilestone, h.Issue, h.Text})
 			}
-			switch h.Action {
-			case "issue":
-				actions = append(actions, action{h.Time, opCreate, h.Issue, ""})
-			case "milestone?", "milestoned":
-				if h.Text != "" {
-					actions = append(actions, action{h.Time, opMilestone, h.Issue, h.Text})
-				}
-			case "demilestoned":
-				actions = append(actions, action{h.Time, opDemilestone, h.Issue, h.Text})
-			case "close?", "closed":
-				actions = append(actions, action{h.Time, opClose, h.Issue, ""})
-			case "reopened":
-				actions = append(actions, action{h.Time, opReopen, h.Issue, ""})
-			case "labeled":
-				actions = append(actions, action{h.Time, opLabel, h.Issue, h.Text})
-			case "unlabeled":
-				actions = append(actions, action{h.Time, opUnlabel, h.Issue, h.Text})
-			}
-			last = h.RowID
+		case "demilestoned":
+			actions = append(actions, action{h.Time, opDemilestone, h.Issue, h.Text})
+		case "close?", "closed":
+			actions = append(actions, action{h.Time, opClose, h.Issue, ""})
+		case "reopened":
+			actions = append(actions, action{h.Time, opReopen, h.Issue, ""})
+		case "labeled":
+			actions = append(actions, action{h.Time, opLabel, h.Issue, h.Text})
+		case "unlabeled":
+			actions = append(actions, action{h.Time, opUnlabel, h.Issue, h.Text})
 		}
 	}
 	sort.Stable(actionsByTime(actions))
@@ -139,10 +138,11 @@ func plot(actions []action, maxIssue int, emit func([]issueState, string)) {
 const minDate = "2016-04-01"
 
 func dash() {
-	actions, maxIssue := dashActions()
+	actions, maxIssue := dashActions("golang/go")
 	plotRelease(actions, maxIssue, "Go1.8")
 	plotRelease(actions, maxIssue, "Go1.9")
 	plotNeeds(actions, maxIssue)
+	plotActivity()
 }
 
 func plotRelease(actions []action, maxIssue int, release string) {
@@ -238,4 +238,109 @@ func plotNeeds(actions []action, maxIssue int) {
 	})
 	fmt.Fprintf(&buf, "\n];\n\n")
 	os.Stdout.Write(buf.Bytes())
+}
+
+func plotActivity() {
+	rows, err := db.Query("select Who, count(*) from History where Time >= '2016-04-05' group by Who")
+	if err != nil {
+		log.Fatalf("sql activity: %v", err)
+	}
+	totalWho := map[string]int{}
+	for rows.Next() {
+		var who string
+		var count int
+		if err := rows.Scan(&who, &count); err != nil {
+			log.Fatal("sql scan counts: %v", err)
+		}
+		totalWho[who] += count
+	}
+
+	var allWho []string
+	for who := range totalWho {
+		allWho = append(allWho, who)
+	}
+	sort.Slice(allWho, func(i, j int) bool {
+		ti := totalWho[allWho[i]]
+		tj := totalWho[allWho[j]]
+		if ti != tj {
+			return ti > tj
+		}
+		return allWho[i] < allWho[j]
+	})
+
+	if len(allWho) > 40 {
+		allWho = allWho[:40]
+	}
+	plotActivityCounts("GithubActivityData", "", allWho)
+	for _, action := range []string{"assigned", "closed", "comment", "labeled", "mentioned", "milestoned", "renamed", "subscribed"} {
+		plotActivityCounts("GithubActivityData_"+action, " and Action = '"+action+"'", allWho)
+	}
+}
+
+type weekActivity struct {
+	week  string
+	count map[string]int
+}
+
+func plotActivityCounts(name, cond string, allWho []string) {
+	rows, err := db.Query("select strftime('%Y-%W', Time) as Week, Who, count(*) as N from History where Time >= '2016-08-01'" + cond + " group by Week, Who order by Week, Who")
+	if err != nil {
+		log.Fatalf("sql activity counts: %v", err)
+	}
+	thisWeek := ""
+	var weeks []weekActivity
+	for rows.Next() {
+		var count int
+		var week, who string
+		if err := rows.Scan(&week, &who, &count); err != nil {
+			log.Fatalf("sql scan activity: %v", err)
+		}
+		if thisWeek != week {
+			weeks = append(weeks, weekActivity{week: week, count: map[string]int{}})
+			thisWeek = week
+		}
+		w := &weeks[len(weeks)-1]
+		w.count[who] += count
+	}
+
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "var %s = ", name)
+	printActivity(&buf, allWho, weeks)
+	os.Stdout.Write(buf.Bytes())
+}
+
+func printActivity(buf *bytes.Buffer, allWho []string, weeks []weekActivity) {
+	fmt.Fprintf(buf, "[\n")
+	fmt.Fprintf(buf, "  ['Date'")
+	for _, who := range allWho {
+		fmt.Fprintf(buf, ", '%s'", who)
+	}
+	fmt.Fprintf(buf, "],\n")
+	for _, w := range weeks {
+		fmt.Fprintf(buf, " [%s", weekToDate(w.week))
+		for _, who := range allWho {
+			fmt.Fprintf(buf, ", %d", w.count[who])
+		}
+		fmt.Fprintf(buf, "],\n")
+	}
+	fmt.Fprintf(buf, "];\n\n")
+}
+
+func weekToDate(w string) string {
+	y, err := strconv.Atoi(w[:4])
+	if err != nil {
+		log.Fatalf("bad week %s", w)
+	}
+	ww, err := strconv.Atoi(w[5:])
+	if err != nil {
+		log.Fatalf("bad week %s", w)
+	}
+	now := time.Date(y, time.January, 1, 12, 0, 0, 0, time.UTC)
+	if ww > 0 {
+		for now.Weekday() != time.Monday {
+			now = now.AddDate(0, 0, 1)
+		}
+		now = now.AddDate(0, 0, (ww-1)*7)
+	}
+	return fmt.Sprintf("myDate('%s')", now.Format(time.RFC3339)[:10])
 }

@@ -39,19 +39,20 @@ type ProjectSync struct {
 }
 
 type RawJSON struct {
-	RowID   int64 `dbstore:",rowid"`
+	URL     string `dbstore:",key"`
 	Project string
+	Issue   int64
 	Type    string
 	JSON    []byte `dbstore:",blob"`
 }
 
 type History struct {
-	RowID   int64 `dbstore:",rowid"`
+	URL     string `dbstore:",key"`
 	Project string
 	Issue   int64
 	Time    string
 	Who     string
-	Action  string
+	Action  string `dbstore:",key"`
 	Text    string
 }
 
@@ -70,6 +71,7 @@ Commands are:
 	init <clientid> <clientsecret> (initialize new database)
 	add <owner/repo> (add new repository)
 	sync (sync repositories)
+	resync (full resync to catch very old events)
 
 The default database is $HOME/githubissue.db.
 `)
@@ -156,13 +158,13 @@ func main() {
 		}
 		return
 
-	case "sync":
+	case "sync", "resync":
 		var projects []ProjectSync
 		if err := storage.Select(db, &projects, ""); err != nil {
 			log.Fatalf("reading projects: %v", err)
 		}
 		for _, proj := range projects {
-			doSync(&proj)
+			doSync(&proj, args[0] == "resync")
 		}
 
 	case "refill":
@@ -173,11 +175,14 @@ func main() {
 	}
 }
 
-func doSync(proj *ProjectSync) {
+func doSync(proj *ProjectSync, resync bool) {
 	println("WOULD SYNC", proj.Name)
 	syncIssueComments(proj)
 	syncIssues(proj)
-	syncIssueEvents(proj)
+	syncIssueEvents(proj, 0)
+	if resync {
+		syncIssueEventsByIssue(proj)
+	}
 }
 
 func syncIssueComments(proj *ProjectSync) {
@@ -203,7 +208,7 @@ func downloadByDate(proj *ProjectSync, api string, since *string, sinceName stri
 	if api == "/issues/comments" {
 		delete(values, "per_page")
 	}
-	if *since != "" {
+	if since != nil && *since != "" {
 		values.Set("since", *since)
 	}
 	urlStr := "https://api.github.com/repos/" + proj.Name + api + "?" + values.Encode()
@@ -217,7 +222,10 @@ func downloadByDate(proj *ProjectSync, api string, since *string, sinceName stri
 		var last string
 		for _, m := range all {
 			var meta struct {
-				Updated string `json:"updated_at"`
+				URL      string
+				Updated  string `json:"updated_at"`
+				Number   int64  // for /issues feed
+				IssueURL string `json:"issue_url"` // for /issues/comments feed
 			}
 			if err := json.Unmarshal(m, &meta); err != nil {
 				return fmt.Errorf("parsing message: %v", err)
@@ -228,16 +236,32 @@ func downloadByDate(proj *ProjectSync, api string, since *string, sinceName stri
 			last = meta.Updated
 
 			var raw RawJSON
+			raw.URL = meta.URL
 			raw.Project = proj.Name
+			switch api {
+			default:
+				log.Fatal("downloadByDate: unknown API: %v", api)
+			case "/issues":
+				raw.Issue = meta.Number
+			case "/issues/comments":
+				i := strings.LastIndex(meta.IssueURL, "/")
+				n, err := strconv.ParseInt(meta.IssueURL[i+1:], 10, 64)
+				if err != nil {
+					log.Fatal("cannot find issue number in /issues/comments API: %v", urlStr)
+				}
+				raw.Issue = n
+			}
 			raw.Type = api
 			raw.JSON = m
 			if err := storage.Insert(tx, &raw); err != nil {
 				return fmt.Errorf("writing JSON to database: %v", err)
 			}
 		}
-		*since = last
-		if err := storage.Write(tx, proj, sinceName); err != nil {
-			return fmt.Errorf("updating database metadata: %v", err)
+		if since != nil {
+			*since = last
+			if err := storage.Write(tx, proj, sinceName); err != nil {
+				return fmt.Errorf("updating database metadata: %v", err)
+			}
 		}
 		if err := tx.Commit(); err != nil {
 			return err
@@ -250,7 +274,7 @@ func downloadByDate(proj *ProjectSync, api string, since *string, sinceName stri
 	}
 }
 
-func syncIssueEvents(proj *ProjectSync) {
+func syncIssueEvents(proj *ProjectSync, id int) {
 	tx, err := db.Begin()
 	if err != nil {
 		log.Fatalf("starting db transaction: %v", err)
@@ -263,7 +287,10 @@ func syncIssueEvents(proj *ProjectSync) {
 		"page":          {"1"},
 		"per_page":      {"100"},
 	}
-	const api = "/issues/events"
+	var api = "/issues/events"
+	if id > 0 {
+		api = fmt.Sprintf("/issues/%d/events", id)
+	}
 	urlStr := "https://api.github.com/repos/" + proj.Name + api + "?" + values.Encode()
 	var (
 		firstID   int64
@@ -273,7 +300,11 @@ func syncIssueEvents(proj *ProjectSync) {
 	err = downloadPages(urlStr, proj.EventETag, func(resp *http.Response, all []json.RawMessage) error {
 		for _, m := range all {
 			var meta struct {
-				ID int64 `json:"id"`
+				ID    int64  `json:"id"`
+				URL   string `json:"url"`
+				Issue struct {
+					Number int64
+				}
 			}
 			if err := json.Unmarshal(m, &meta); err != nil {
 				return fmt.Errorf("parsing message: %v", err)
@@ -286,13 +317,19 @@ func syncIssueEvents(proj *ProjectSync) {
 				firstID = meta.ID
 				firstETag = resp.Header.Get("Etag")
 			}
-			if proj.EventID != 0 && meta.ID <= proj.EventID {
+			if id == 0 && proj.EventID != 0 && meta.ID <= proj.EventID {
 				return done
 			}
 
 			var raw RawJSON
+			raw.URL = meta.URL
 			raw.Project = proj.Name
-			raw.Type = api
+			raw.Type = "/issues/events"
+			if id > 0 {
+				raw.Issue = int64(id)
+			} else {
+				raw.Issue = meta.Issue.Number
+			}
 			raw.JSON = m
 			if err := storage.Insert(tx, &raw); err != nil {
 				return fmt.Errorf("writing JSON to database: %v", err)
@@ -304,10 +341,13 @@ func syncIssueEvents(proj *ProjectSync) {
 		err = nil
 	}
 	if err != nil {
+		if strings.Contains(err.Error(), "304 Not Modified") {
+			return
+		}
 		log.Fatalf("syncing events: %v", err)
 	}
 
-	if firstID != 0 {
+	if id == 0 && firstID != 0 {
 		proj.EventID = firstID
 		proj.EventETag = firstETag
 		if err := storage.Write(tx, proj, "EventID", "EventETag"); err != nil {
@@ -317,6 +357,30 @@ func syncIssueEvents(proj *ProjectSync) {
 
 	if err := tx.Commit(); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func syncIssueEventsByIssue(proj *ProjectSync) {
+	rows, err := db.Query("select URL from RawJSON where Type = ? group by URL", "/issues")
+	if err != nil {
+		log.Fatal(err)
+	}
+	var ids []int
+	for rows.Next() {
+		var url string
+		if err := rows.Scan(&url); err != nil {
+			log.Fatal(err)
+		}
+		i := strings.LastIndex(url, "/")
+		id, err := strconv.Atoi(url[i+1:])
+		if err != nil {
+			log.Fatal(url, err)
+		}
+		ids = append(ids, id)
+	}
+	for _, id := range ids {
+		println("ID", id)
+		syncIssueEvents(proj, id)
 	}
 }
 
@@ -343,6 +407,17 @@ func downloadPages(url, etag string, do func(*http.Response, []json.RawMessage) 
 			return fmt.Errorf("reading body: %v", err)
 		}
 		if resp.StatusCode != 200 {
+			if resp.StatusCode == 403 {
+				if resp.Header.Get("X-Ratelimit-Remaining") == "0" {
+					n, _ := strconv.Atoi(resp.Header.Get("X-Ratelimit-Reset"))
+					if n > 0 {
+						t := time.Unix(int64(n), 0)
+						println("RATELIMIT", t.String())
+						time.Sleep(t.Sub(time.Now()) + 1*time.Minute)
+						goto again
+					}
+				}
+			}
 			if resp.StatusCode == 500 {
 				nfail++
 				if nfail < 2 {
@@ -418,6 +493,8 @@ func js(x interface{}) string {
 }
 
 type ghIssueEvent struct {
+	// NOTE: Issue field is not present when downloading for a specific issue,
+	// only in the master feed for the whole repo. So do not add it here.
 	Actor struct {
 		Login string `json:"login"`
 	} `json:"actor"`
@@ -426,11 +503,8 @@ type ghIssueEvent struct {
 		Name string `json:"name"`
 	} `json:"label"`
 	CreatedAt string `json:"created_at"`
-	Issue     struct {
-		Number int64 `json:"number"`
-	} `json:"issue"`
-	CommitID string `json:"commit_id"`
-	Assignee struct {
+	CommitID  string `json:"commit_id"`
+	Assignee  struct {
 		Login string `json:"login"`
 	} `json:"assignee"`
 	Milestone struct {
@@ -475,22 +549,22 @@ func refill() {
 	if _, err := db.Exec("delete from History"); err != nil {
 		log.Fatal(err)
 	}
-	var last int64
+	last := ""
 	for {
 		var all []RawJSON
-		if err := storage.Select(db, &all, "where RowID > ? order by RowID asc limit 100", last); err != nil {
+		if err := storage.Select(db, &all, "where URL > ? order by URL asc limit 100", last); err != nil {
 			log.Fatal("sql: %v", err)
 		}
 		if len(all) == 0 {
 			break
 		}
-		println("GOT", len(all), all[0].RowID, all[len(all)-1].RowID)
+		println("GOT", len(all), all[0].URL, all[0].Type, all[len(all)-1].URL, all[len(all)-1].Type)
 		tx, err := db.Begin()
 		if err != nil {
 			log.Fatal(err)
 		}
 		for _, m := range all {
-			last = m.RowID
+			last = m.URL
 			switch m.Type {
 			default:
 				println("TYPE", m.Type)
@@ -501,9 +575,9 @@ func refill() {
 					continue
 				}
 				var h History
-				h.RowID = m.RowID * 10
+				h.URL = m.URL
 				h.Project = m.Project
-				h.Issue = ev.Issue.Number
+				h.Issue = m.Issue
 				h.Time = ev.CreatedAt
 				h.Who = ev.Actor.Login
 				h.Action = ev.Event
@@ -549,7 +623,7 @@ func refill() {
 					continue
 				}
 				var h History
-				h.RowID = m.RowID * 10
+				h.URL = m.URL
 				h.Project = m.Project
 				h.Issue = n
 				h.Time = ev.UpdatedAt
@@ -573,7 +647,7 @@ func refill() {
 					continue
 				}
 				var h History
-				h.RowID = m.RowID * 10
+				h.URL = m.URL
 				h.Project = m.Project
 				h.Issue = n
 				h.Time = ev.CreatedAt // best we can do
@@ -588,7 +662,6 @@ func refill() {
 				}
 
 				if ev.Assignee.Login != "" {
-					h.RowID++
 					h.Action = "assign?"
 					h.Text = ev.Assignee.Login
 					if err := storage.Insert(tx, &h); err != nil {
@@ -596,7 +669,6 @@ func refill() {
 					}
 				}
 				if ev.Milestone.Title != "" {
-					h.RowID++
 					h.Action = "milestone?"
 					h.Text = ev.Assignee.Login
 					if err := storage.Insert(tx, &h); err != nil {
@@ -604,7 +676,6 @@ func refill() {
 					}
 				}
 				if ev.State != "open" {
-					h.RowID++
 					h.Action = "close?"
 					h.Text = ""
 					if err := storage.Insert(tx, &h); err != nil {
