@@ -42,7 +42,7 @@ func editText(original []byte) []byte {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := ioutil.WriteFile(f.Name(), original, 0666); err != nil {
+	if err := ioutil.WriteFile(f.Name(), original, 0600); err != nil {
 		log.Fatal(err)
 	}
 	if err := runEditor(f.Name()); err != nil {
