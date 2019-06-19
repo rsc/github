@@ -6,6 +6,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -20,21 +21,21 @@ import (
 	"github.com/google/go-github/github"
 )
 
-func editIssue(original []byte, issue *github.Issue) {
+func editIssue(project string, original []byte, issue *github.Issue) {
 	updated := editText(original)
 	if bytes.Equal(original, updated) {
 		log.Print("no changes made")
 		return
 	}
 
-	newIssue, err := writeIssue(issue, updated, false)
+	newIssue, _, err := writeIssue(project, issue, updated, false)
 	if err != nil {
 		log.Fatal(err)
 	}
 	if newIssue != nil {
 		issue = newIssue
 	}
-	log.Printf("https://github.com/%s/issues/%d updated", *project, getInt(issue.Number))
+	log.Printf("https://github.com/%s/issues/%d updated", project, getInt(issue.Number))
 }
 
 func editText(original []byte) []byte {
@@ -90,7 +91,7 @@ func runEditor(filename string) error {
 
 const bulkHeader = "\nBulk editing these issues:"
 
-func writeIssue(old *github.Issue, updated []byte, isBulk bool) (issue *github.Issue, err error) {
+func writeIssue(project string, old *github.Issue, updated []byte, isBulk bool) (issue *github.Issue, rate *github.Rate, err error) {
 	var errbuf bytes.Buffer
 	defer func() {
 		if errbuf.Len() > 0 {
@@ -132,7 +133,7 @@ func writeIssue(old *github.Issue, updated []byte, isBulk bool) (issue *github.I
 			}
 
 		case strings.HasPrefix(line, "Milestone:"):
-			edit.Milestone = findMilestone(&errbuf, diff(line, "Milestone:", getMilestoneTitle(old.Milestone)))
+			edit.Milestone = findMilestone(&errbuf, project, diff(line, "Milestone:", getMilestoneTitle(old.Milestone)))
 
 		case strings.HasPrefix(line, "URL:"):
 			continue
@@ -143,23 +144,26 @@ func writeIssue(old *github.Issue, updated []byte, isBulk bool) (issue *github.I
 	}
 
 	if errbuf.Len() > 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	if getInt(old.Number) == 0 {
 		comment := strings.TrimSpace(sdata[off:])
 		edit.Body = &comment
-		issue, _, err := client.Issues.Create(projectOwner, projectRepo, &edit)
+		issue, resp, err := client.Issues.Create(context.TODO(), projectOwner(project), projectRepo(project), &edit)
+		if resp != nil {
+			rate = &resp.Rate
+		}
 		if err != nil {
 			fmt.Fprintf(&errbuf, "error creating issue: %v\n", err)
-			return nil, nil
+			return nil, rate, nil
 		}
-		return issue, nil
+		return issue, rate, nil
 	}
 
 	if getInt(old.Number) == -1 {
 		// Asking to just sanity check the text parsing.
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	marker := "\nReported by "
@@ -178,9 +182,12 @@ func writeIssue(old *github.Issue, updated []byte, isBulk bool) (issue *github.I
 	var failed bool
 	var did []string
 	if comment != "" {
-		_, _, err := client.Issues.CreateComment(projectOwner, projectRepo, getInt(old.Number), &github.IssueComment{
+		_, resp, err := client.Issues.CreateComment(context.TODO(), projectOwner(project), projectRepo(project), getInt(old.Number), &github.IssueComment{
 			Body: &comment,
 		})
+		if resp != nil {
+			rate = &resp.Rate
+		}
 		if err != nil {
 			fmt.Fprintf(&errbuf, "error saving comment: %v\n", err)
 			failed = true
@@ -190,7 +197,10 @@ func writeIssue(old *github.Issue, updated []byte, isBulk bool) (issue *github.I
 	}
 
 	if edit.Title != nil || edit.State != nil || edit.Assignee != nil || edit.Labels != nil || edit.Milestone != nil {
-		_, _, err := client.Issues.Edit(projectOwner, projectRepo, getInt(old.Number), &edit)
+		_, resp, err := client.Issues.Edit(context.TODO(), projectOwner(project), projectRepo(project), getInt(old.Number), &edit)
+		if resp != nil {
+			rate = &resp.Rate
+		}
 		if err != nil {
 			fmt.Fprintf(&errbuf, "error changing metadata: %v\n", err)
 			failed = true
@@ -199,7 +209,10 @@ func writeIssue(old *github.Issue, updated []byte, isBulk bool) (issue *github.I
 		}
 	}
 	if len(addLabels) > 0 {
-		_, _, err := client.Issues.AddLabelsToIssue(projectOwner, projectRepo, getInt(old.Number), addLabels)
+		_, resp, err := client.Issues.AddLabelsToIssue(context.TODO(), projectOwner(project), projectRepo(project), getInt(old.Number), addLabels)
+		if resp != nil {
+			rate = &resp.Rate
+		}
 		if err != nil {
 			fmt.Fprintf(&errbuf, "error adding labels: %v\n", err)
 			failed = true
@@ -213,7 +226,10 @@ func writeIssue(old *github.Issue, updated []byte, isBulk bool) (issue *github.I
 	}
 	if len(removeLabels) > 0 {
 		for _, label := range removeLabels {
-			_, err := client.Issues.RemoveLabelForIssue(projectOwner, projectRepo, getInt(old.Number), label)
+			resp, err := client.Issues.RemoveLabelForIssue(context.TODO(), projectOwner(project), projectRepo(project), getInt(old.Number), label)
+			if resp != nil {
+				rate = &resp.Rate
+			}
 			if err != nil {
 				fmt.Fprintf(&errbuf, "error removing label %s: %v\n", label, err)
 				failed = true
@@ -290,12 +306,12 @@ func diffList2(line, field string, old []string) (added, removed []string) {
 	return
 }
 
-func findMilestone(w io.Writer, name *string) *int {
+func findMilestone(w io.Writer, project string, name *string) *int {
 	if name == nil {
 		return nil
 	}
 
-	all, err := loadMilestones()
+	all, err := loadMilestones(project)
 	if err != nil {
 		fmt.Fprintf(w, "Error loading milestone list: %v\n\tIgnoring milestone change.\n", err)
 		return nil
@@ -329,12 +345,12 @@ func readBulkIDs(text []byte) []int {
 	return ids
 }
 
-func bulkEditStartFromText(content []byte) (base *github.Issue, original []byte, err error) {
+func bulkEditStartFromText(project string, content []byte) (base *github.Issue, original []byte, err error) {
 	ids := readBulkIDs(content)
 	if len(ids) == 0 {
 		return nil, nil, fmt.Errorf("found no issues in selection")
 	}
-	issues, err := bulkReadIssuesCached(ids)
+	issues, err := bulkReadIssuesCached(project, ids)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -349,14 +365,14 @@ func suffix(n int) string {
 	return "s"
 }
 
-func bulkEditIssues(issues []*github.Issue) {
+func bulkEditIssues(project string, issues []*github.Issue) {
 	base, original := bulkEditStart(issues)
 	updated := editText(original)
 	if bytes.Equal(original, updated) {
 		log.Print("no changes made")
 		return
 	}
-	ids, err := bulkWriteIssue(base, updated, func(s string) { log.Print(s) })
+	ids, err := bulkWriteIssue(project, base, updated, func(s string) { log.Print(s) })
 	if err != nil {
 		errText := strings.Replace(err.Error(), "\n", "\t\n", -1)
 		if len(ids) > 0 {
@@ -427,7 +443,7 @@ func commonLabels(x, y []github.Label) []github.Label {
 	return out
 }
 
-func bulkWriteIssue(old *github.Issue, updated []byte, status func(string)) (ids []int, err error) {
+func bulkWriteIssue(project string, old *github.Issue, updated []byte, status func(string)) (ids []int, err error) {
 	i := bytes.Index(updated, []byte(bulkHeader))
 	if i < 0 {
 		return nil, fmt.Errorf("cannot find bulk edit issue list")
@@ -444,7 +460,8 @@ func bulkWriteIssue(old *github.Issue, updated []byte, status func(string)) (ids
 	// Try a write to issue -1, checking for formatting only.
 	old.Number = new(int)
 	*old.Number = -1
-	if _, err := writeIssue(old, updated, true); err != nil {
+	_, rate, err := writeIssue(project, old, updated, true)
+	if err != nil {
 		return nil, err
 	}
 
@@ -462,19 +479,24 @@ func bulkWriteIssue(old *github.Issue, updated []byte, status func(string)) (ids
 		}
 		// Check rate limits here (in contrast to everywhere else in this program)
 		// to avoid needless failure halfway through the loop.
-		for client.Rate().Limit > 0 && client.Rate().Remaining == 0 {
-			delta := (client.Rate().Reset.Sub(time.Now())/time.Minute + 2) * time.Minute
+		for rate != nil && rate.Limit > 0 && rate.Remaining == 0 {
+			delta := (rate.Reset.Sub(time.Now())/time.Minute + 2) * time.Minute
 			if delta < 0 {
 				delta = 2 * time.Minute
 			}
 			status(fmt.Sprintf("updated %d/%d issues; pausing %d minutes to respect GitHub rate limit", index, len(ids), int(delta/time.Minute)))
 			time.Sleep(delta)
-			if _, _, err := client.RateLimit(); err != nil {
+			limits, _, err := client.RateLimits(context.TODO())
+			if err != nil {
 				status(fmt.Sprintf("reading rate limit: %v", err))
+			}
+			rate = nil
+			if limits != nil {
+				rate = limits.Core
 			}
 		}
 		*old.Number = number
-		if _, err := writeIssue(old, updated, true); err != nil {
+		if _, rate, err = writeIssue(project, old, updated, true); err != nil {
 			status(fmt.Sprintf("writing #%d: %s", number, strings.Replace(err.Error(), "\n", "\n\t", -1)))
 			failed = true
 		}
@@ -484,4 +506,12 @@ func bulkWriteIssue(old *github.Issue, updated []byte, status func(string)) (ids
 		return ids, fmt.Errorf("failed to update all issues")
 	}
 	return ids, nil
+}
+
+func projectOwner(project string) string {
+	return project[:strings.Index(project, "/")]
+}
+
+func projectRepo(project string) string {
+	return project[strings.Index(project, "/")+1:]
 }

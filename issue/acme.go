@@ -7,22 +7,36 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"9fans.net/go/acme"
-	"9fans.net/go/draw"
+	"9fans.net/go/plumb"
 	"github.com/google/go-github/github"
 )
+
+func (w *awin) project() string {
+	p := w.prefix
+	p = strings.TrimPrefix(p, "/issue/")
+	i := strings.Index(p, "/")
+	if i >= 0 {
+		j := strings.Index(p[i+1:], "/")
+		if j >= 0 {
+			p = p[:i+1+j]
+		}
+	}
+	return p
+}
 
 func acmeMode() {
 	var dummy awin
@@ -32,19 +46,74 @@ func acmeMode() {
 		// Decide which behavior should be used, and use it consistently.
 		// TODO(rsc): Block this look from doing the multiline selection mode?
 		for _, arg := range flag.Args() {
-			if dummy.look(arg) {
+			if dummy.Look(arg) {
 				continue
 			}
 			if arg == "new" {
 				dummy.createIssue()
 				continue
 			}
-			dummy.newSearch("search", arg)
+			dummy.newSearch(dummy.prefix, "search", arg)
 		}
 	} else {
-		dummy.look("all")
+		dummy.Look("all")
 	}
+
+	go dummy.plumbserve()
+
 	select {}
+}
+
+func (w *awin) plumbserve() {
+	fid, err := plumb.Open("githubissue", 0)
+	if err != nil {
+		w.Err(fmt.Sprintf("plumb: %v", err))
+		return
+	}
+	r := bufio.NewReader(fid)
+	for {
+		var m plumb.Message
+		if err := m.Recv(r); err != nil {
+			w.Err(fmt.Sprintf("plumb recv: %v", err))
+			return
+		}
+		if m.Type != "text" {
+			w.Err(fmt.Sprintf("plumb recv: unexpected type: %s\n", m.Type))
+			continue
+		}
+		if m.Dst != "githubissue" {
+			w.Err(fmt.Sprintf("plumb recv: unexpected dst: %s\n", m.Dst))
+			continue
+		}
+		// TODO use m.Dir
+		data := string(m.Data)
+		var project, what string
+		if strings.HasPrefix(data, "/issue/") {
+			project = data[len("/issue/"):]
+			i := strings.LastIndex(project, "/")
+			if i < 0 {
+				w.Err(fmt.Sprintf("plumb recv: bad text %q", data))
+				continue
+			}
+			project, what = project[:i], project[i+1:]
+		} else {
+			i := strings.Index(data, "#")
+			if i < 0 {
+				w.Err(fmt.Sprintf("plumb recv: bad text %q", data))
+				continue
+			}
+			project, what = data[:i], data[i+1:]
+		}
+		if strings.Count(project, "/") != 1 {
+			w.Err(fmt.Sprintf("plumb recv: bad text %q", data))
+			continue
+		}
+		var plummy awin
+		plummy.prefix = "/issue/" + project + "/"
+		if !plummy.Look(what) {
+			w.Err(fmt.Sprintf("plumb recv: can't look %s%s", plummy.prefix, what))
+		}
+	}
 }
 
 const (
@@ -62,37 +131,31 @@ type awin struct {
 	query        string
 	id           int
 	github       *github.Issue
-	tab          int
-	font         *draw.Font
-	fontName     string
 	title        string
 	sortByNumber bool // otherwise sort by title
 }
 
 var all struct {
 	sync.Mutex
-	m      map[string]*awin
-	f      map[string]*draw.Font
-	numwin int
+	m map[*acme.Win]*awin
 }
 
 func (w *awin) exit() {
 	all.Lock()
 	defer all.Unlock()
-	if all.m[w.title] == w {
-		delete(all.m, w.title)
+	if all.m[w.Win] == w {
+		delete(all.m, w.Win)
 	}
-	if all.numwin--; all.numwin == 0 {
+	if len(all.m) == 0 {
 		os.Exit(0)
 	}
 }
 
-func (w *awin) new(title string) *awin {
+func (w *awin) new(prefix, title string) *awin {
 	all.Lock()
 	defer all.Unlock()
-	all.numwin++
 	if all.m == nil {
-		all.m = make(map[string]*awin)
+		all.m = make(map[*acme.Win]*awin)
 	}
 	w1 := new(awin)
 	w1.title = title
@@ -106,133 +169,106 @@ func (w *awin) new(title string) *awin {
 			log.Fatalf("creating acme window again: %v", err)
 		}
 	}
-	w1.prefix = w.prefix
+	w1.prefix = prefix
+	w1.SetErrorPrefix(w1.prefix)
 	w1.Name(w1.prefix + title)
-	if title != "new" {
-		all.m[title] = w1
-	}
+	all.m[w1.Win] = w1
 	return w1
 }
 
-func (w *awin) show(title string) *awin {
-	all.Lock()
-	defer all.Unlock()
-	if w1 := all.m[title]; w1 != nil {
-		w.Ctl("show")
-		return w1
-	}
-	return nil
-}
-
-func (w *awin) fixfont() {
-	ctl := make([]byte, 1000)
-	w.Seek("ctl", 0, 0)
-	n, err := w.Read("ctl", ctl)
-	if err != nil {
-		return
-	}
-	f := strings.Fields(string(ctl[:n]))
-	if len(f) < 8 {
-		return
-	}
-	w.tab, _ = strconv.Atoi(f[7])
-	if w.tab == 0 {
-		return
-	}
-	name := f[6]
-	if w.fontName == name {
-		return
-	}
-	all.Lock()
-	defer all.Unlock()
-	if font := all.f[name]; font != nil {
-		w.font = font
-		w.fontName = name
-		return
-	}
-	var disp *draw.Display = nil
-	font, err := disp.OpenFont(name)
-	if err != nil {
-		return
-	}
-	if all.f == nil {
-		all.f = make(map[string]*draw.Font)
-	}
-	all.f[name] = font
-	w.font = font
+func (w *awin) show(title string) bool {
+	return acme.Show(w.prefix+title) != nil
 }
 
 var numRE = regexp.MustCompile(`(?m)^#[0-9]+\t`)
+var repoHashRE = regexp.MustCompile(`\A([A-Za-z0-9_]+/[A-Za-z0-9_]+)#(all|[0-9]+)\z`)
 
 var milecache struct {
 	sync.Mutex
-	list []*github.Milestone
+	list map[string][]*github.Milestone
 }
 
-func cachedMilestones() []*github.Milestone {
+func cachedMilestones(project string) []*github.Milestone {
 	milecache.Lock()
 	if milecache.list == nil {
-		milecache.list, _ = loadMilestones()
+		milecache.list = make(map[string][]*github.Milestone)
 	}
-	list := milecache.list
+	if milecache.list[project] == nil {
+		milecache.list[project], _ = loadMilestones(project)
+	}
+	list := milecache.list[project]
 	milecache.Unlock()
 	return list
 }
 
-func (w *awin) look(text string) bool {
+func (w *awin) Look(text string) bool {
 	ids := readBulkIDs([]byte(text))
 	if len(ids) > 0 {
 		for _, id := range ids {
 			text := fmt.Sprint(id)
-			if w.show(text) != nil {
+			if w.show(text) {
 				continue
 			}
-			w.newIssue(text, id)
+			w.newIssue(w.prefix, text, id)
 		}
 		return true
 	}
 
 	if text == "all" {
-		if w.show("all") != nil {
+		if w.show("all") {
 			return true
 		}
-		w.newSearch("all", "")
+		w.newSearch(w.prefix, "all", "")
 		return true
 	}
 	if text == "Milestone" || text == "Milestones" || text == "milestone" {
-		if w.show("milestone") != nil {
+		if w.show("milestone") {
 			return true
 		}
 		w.newMilestoneList()
 		return true
 	}
-	milecache.Lock()
-	if milecache.list == nil {
-		milecache.list, _ = loadMilestones()
-	}
-	list := milecache.list
-	milecache.Unlock()
+	list := cachedMilestones(w.project())
 	for _, m := range list {
 		if getString(m.Title) == text {
-			if w.show(text) != nil {
+			if w.show(text) {
 				return true
 			}
-			w.newSearch(text, "milestone:"+text)
+			w.newSearch(w.prefix, text, "milestone:"+text)
 			return true
 		}
 	}
 
-	if n, _ := strconv.Atoi(strings.TrimPrefix(text, "#")); 0 < n && n < 100000 {
+	if n, _ := strconv.Atoi(strings.TrimPrefix(text, "#")); 0 < n && n < 1000000 {
 		text = strings.TrimPrefix(text, "#")
-		if w.show(text) != nil {
+		if w.show(text) {
 			return true
 		}
-		w.newIssue(text, n)
+		w.newIssue(w.prefix, text, n)
 		return true
 	}
+
+	if m := repoHashRE.FindStringSubmatch(text); m != nil {
+		project := m[1]
+		what := m[2]
+		prefix := "/issue/" + project + "/"
+		if acme.Show(prefix+what) != nil {
+			return true
+		}
+		if what == "all" {
+			w.newSearch(prefix, what, "")
+			return true
+		}
+		if n, _ := strconv.Atoi(what); 0 < n && n < 1000000 {
+			w.newIssue(prefix, what, n)
+			return true
+		}
+		return false
+	}
+
 	if m := numRE.FindAllString(text, -1); m != nil {
 		for _, s := range m {
-			w.look(strings.TrimSpace(strings.TrimPrefix(s, "#")))
+			w.Look(strings.TrimSpace(strings.TrimPrefix(s, "#")))
 		}
 		return true
 	}
@@ -241,16 +277,16 @@ func (w *awin) look(text string) bool {
 
 func (w *awin) setMilestone(milestone, text string) {
 	var buf bytes.Buffer
-	id := findMilestone(&buf, &milestone)
+	id := findMilestone(&buf, w.project(), &milestone)
 	if buf.Len() > 0 {
-		w.err(strings.TrimSpace(buf.String()))
+		w.Err(strings.TrimSpace(buf.String()))
 	}
 	if id == nil {
 		return
 	}
 	milestoneID := *id
 
-	stop := w.blinker()
+	stop := w.Blink()
 	defer stop()
 	if w.mode == modeSingle {
 		w.setMilestone1(milestoneID, w.id)
@@ -276,14 +312,14 @@ func (w *awin) setMilestone1(milestoneID, n int) {
 	var edit github.IssueRequest
 	edit.Milestone = &milestoneID
 
-	_, _, err := client.Issues.Edit(projectOwner, projectRepo, n, &edit)
+	_, _, err := client.Issues.Edit(context.TODO(), projectOwner(w.project()), projectRepo(w.project()), n, &edit)
 	if err != nil {
-		w.err(fmt.Sprintf("Error changing issue #%d: %v", n, err))
+		w.Err(fmt.Sprintf("Error changing issue #%d: %v", n, err))
 	}
 }
 
 func (w *awin) createIssue() {
-	w = w.new("new")
+	w = w.new(w.prefix, "new")
 	w.mode = modeCreate
 	w.Ctl("cleartag")
 	w.Fprintf("tag", " Put Search ")
@@ -291,8 +327,8 @@ func (w *awin) createIssue() {
 	go w.loop()
 }
 
-func (w *awin) newIssue(title string, id int) {
-	w = w.new(title)
+func (w *awin) newIssue(prefix, title string, id int) {
+	w = w.new(prefix, title)
 	w.mode = modeSingle
 	w.id = id
 	w.Ctl("cleartag")
@@ -302,7 +338,7 @@ func (w *awin) newIssue(title string, id int) {
 }
 
 func (w *awin) newBulkEdit(body []byte) {
-	w = w.new("bulk-edit/")
+	w = w.new(w.prefix, "bulk-edit/")
 	w.mode = modeBulk
 	w.query = ""
 	w.Ctl("cleartag")
@@ -313,7 +349,7 @@ func (w *awin) newBulkEdit(body []byte) {
 }
 
 func (w *awin) newMilestoneList() {
-	w = w.new("milestone")
+	w = w.new(w.prefix, "milestone")
 	w.mode = modeMilestone
 	w.query = ""
 	w.Ctl("cleartag")
@@ -323,8 +359,8 @@ func (w *awin) newMilestoneList() {
 	go w.loop()
 }
 
-func (w *awin) newSearch(title, query string) {
-	w = w.new(title)
+func (w *awin) newSearch(prefix, title, query string) {
+	w = w.new(prefix, title)
 	w.mode = modeQuery
 	w.query = query
 	w.Ctl("cleartag")
@@ -334,65 +370,28 @@ func (w *awin) newSearch(title, query string) {
 	go w.loop()
 }
 
-func (w *awin) blinker() func() {
-	c := make(chan struct{})
-	go func() {
-		t := time.NewTicker(1000 * time.Millisecond)
-		defer t.Stop()
-		dirty := false
-		for {
-			select {
-			case <-t.C:
-				dirty = !dirty
-				if dirty {
-					w.Ctl("dirty")
-				} else {
-					w.Ctl("clean")
-				}
-			case <-c:
-				if dirty {
-					w.Ctl("clean")
-				}
-				c <- struct{}{}
-				return
-			}
-		}
-	}()
-	return func() {
-		c <- struct{}{}
-		<-c
-	}
-}
-
-func (w *awin) clear() {
-	w.Addr(",")
-	w.Write("data", nil)
-}
-
-var createTemplate = `Title: 
-Assignee: 
-Labels: 
-Milestone: 
+var createTemplate = `Title:
+Assignee:
+Labels:
+Milestone:
 
 <describe issue here>
 
 `
 
 func (w *awin) load() {
-	w.fixfont()
-
 	switch w.mode {
 	case modeCreate:
-		w.clear()
+		w.Clear()
 		w.Write("body", []byte(createTemplate))
 		w.Ctl("clean")
 
 	case modeSingle:
 		var buf bytes.Buffer
-		stop := w.blinker()
-		issue, err := showIssue(&buf, w.id)
+		stop := w.Blink()
+		issue, err := showIssue(&buf, w.project(), w.id)
 		stop()
-		w.clear()
+		w.Clear()
 		if err != nil {
 			w.Write("body", []byte(err.Error()))
 			break
@@ -402,13 +401,16 @@ func (w *awin) load() {
 		w.github = issue
 
 	case modeMilestone:
-		stop := w.blinker()
-		milestones, err := loadMilestones()
+		stop := w.Blink()
+		milestones, err := loadMilestones(w.project())
 		milecache.Lock()
-		milecache.list = milestones
+		if milecache.list == nil {
+			milecache.list = make(map[string][]*github.Milestone)
+		}
+		milecache.list[w.project()] = milestones
 		milecache.Unlock()
 		stop()
-		w.clear()
+		w.Clear()
 		if err != nil {
 			w.Fprintf("body", "Error loading milestones: %v\n", err)
 			break
@@ -417,25 +419,25 @@ func (w *awin) load() {
 		for _, m := range milestones {
 			fmt.Fprintf(&buf, "%s\t%s\t%d\n", getTime(m.DueOn).Format("2006-01-02"), getString(m.Title), getInt(m.OpenIssues))
 		}
-		w.printTabbed(buf.String())
+		w.PrintTabbed(buf.String())
 		w.Ctl("clean")
 
 	case modeQuery:
 		var buf bytes.Buffer
-		stop := w.blinker()
-		err := showQuery(&buf, w.query)
+		stop := w.Blink()
+		err := showQuery(&buf, w.project(), w.query)
 		if w.title == "all" {
-			cachedMilestones()
+			cachedMilestones(w.project())
 		}
 		stop()
-		w.clear()
+		w.Clear()
 		if err != nil {
 			w.Write("body", []byte(err.Error()))
 			break
 		}
 		if w.title == "all" {
 			var names []string
-			for _, m := range cachedMilestones() {
+			for _, m := range cachedMilestones(w.project()) {
 				names = append(names, getString(m.Title))
 			}
 			if len(names) > 0 {
@@ -445,25 +447,25 @@ func (w *awin) load() {
 		if w.title == "search" {
 			w.Fprintf("body", "Search %s\n\n", w.query)
 		}
-		w.printTabbed(buf.String())
+		w.PrintTabbed(buf.String())
 		w.Ctl("clean")
 
 	case modeBulk:
-		stop := w.blinker()
+		stop := w.Blink()
 		body, err := w.ReadAll("body")
 		if err != nil {
-			w.err(fmt.Sprintf("%v", err))
+			w.Err(fmt.Sprintf("%v", err))
 			stop()
 			break
 		}
-		base, original, err := bulkEditStartFromText(body)
+		base, original, err := bulkEditStartFromText(w.project(), body)
 		stop()
 		if err != nil {
-			w.err(fmt.Sprintf("%v", err))
+			w.Err(fmt.Sprintf("%v", err))
 			break
 		}
-		w.clear()
-		w.printTabbed(string(original))
+		w.Clear()
+		w.PrintTabbed(string(original))
 		w.Ctl("clean")
 		w.github = base
 	}
@@ -471,20 +473,6 @@ func (w *awin) load() {
 	w.Addr("0")
 	w.Ctl("dot=addr")
 	w.Ctl("show")
-}
-
-func (w *awin) err(s string) {
-	if !strings.HasSuffix(s, "\n") {
-		s = s + "\n"
-	}
-	w1 := w.show("+Errors")
-	if w1 == nil {
-		w1 = w.new("+Errors")
-	}
-	w1.Fprintf("body", "%s", s)
-	w1.Addr("$")
-	w1.Ctl("dot=addr")
-	w1.Ctl("show")
 }
 
 func diff(line, field, old string) *string {
@@ -497,7 +485,7 @@ func diff(line, field, old string) *string {
 }
 
 func (w *awin) put() {
-	stop := w.blinker()
+	stop := w.Blink()
 	defer stop()
 	switch w.mode {
 	case modeSingle, modeCreate:
@@ -507,12 +495,12 @@ func (w *awin) put() {
 		}
 		data, err := w.ReadAll("body")
 		if err != nil {
-			w.err(fmt.Sprintf("Put: %v", err))
+			w.Err(fmt.Sprintf("Put: %v", err))
 			return
 		}
-		issue, err := writeIssue(old, data, false)
+		issue, _, err := writeIssue(w.project(), old, data, false)
 		if err != nil {
-			w.err(err.Error())
+			w.Err(err.Error())
 			return
 		}
 		if w.mode == modeCreate {
@@ -520,9 +508,6 @@ func (w *awin) put() {
 			w.id = getInt(issue.Number)
 			w.title = fmt.Sprint(w.id)
 			w.Name(w.prefix + w.title)
-			all.Lock()
-			all.m[w.title] = w
-			all.Unlock()
 			w.github = issue
 		}
 		w.load()
@@ -530,82 +515,45 @@ func (w *awin) put() {
 	case modeBulk:
 		data, err := w.ReadAll("body")
 		if err != nil {
-			w.err(fmt.Sprintf("Put: %v", err))
+			w.Err(fmt.Sprintf("Put: %v", err))
 			return
 		}
-		ids, err := bulkWriteIssue(w.github, data, func(s string) { w.err("Put: " + s) })
+		ids, err := bulkWriteIssue(w.project(), w.github, data, func(s string) { w.Err("Put: " + s) })
 		if err != nil {
 			errText := strings.Replace(err.Error(), "\n", "\t\n", -1)
 			if len(ids) > 0 {
-				w.err(fmt.Sprintf("updated %d issue%s with errors:\n\t%v", len(ids), suffix(len(ids)), errText))
+				w.Err(fmt.Sprintf("updated %d issue%s with errors:\n\t%v", len(ids), suffix(len(ids)), errText))
 				break
 			}
-			w.err(fmt.Sprintf("%s", errText))
+			w.Err(fmt.Sprintf("%s", errText))
 			break
 		}
-		w.err(fmt.Sprintf("updated %d issue%s", len(ids), suffix(len(ids))))
+		w.Err(fmt.Sprintf("updated %d issue%s", len(ids), suffix(len(ids))))
 
 	case modeMilestone:
-		w.err("cannot Put milestone list")
+		w.Err("cannot Put milestone list")
 
 	case modeQuery:
-		w.err("cannot Put issue list")
+		w.Err("cannot Put issue list")
 	}
-}
-
-func (w *awin) loadText(e *acme.Event) {
-	if len(e.Text) == 0 && e.Q0 < e.Q1 {
-		w.Addr("#%d,#%d", e.Q0, e.Q1)
-		data, err := w.ReadAll("xdata")
-		if err != nil {
-			w.err(err.Error())
-		}
-		e.Text = data
-	}
-}
-
-func (w *awin) selection() string {
-	w.Ctl("addr=dot")
-	data, err := w.ReadAll("xdata")
-	if err != nil {
-		w.err(err.Error())
-	}
-	return string(data)
 }
 
 func (w *awin) sort() {
 	if err := w.Addr("0/^[0-9]/,"); err != nil {
-		w.err("nothing to sort")
+		w.Err("nothing to sort")
 	}
-	data, err := w.ReadAll("xdata")
-	if err != nil {
-		w.err(err.Error())
-		return
-	}
-	suffix := ""
-	lines := strings.Split(string(data), "\n")
-	if lines[len(lines)-1] == "" {
-		suffix = "\n"
-		lines = lines[:len(lines)-1]
-	}
+	var less func(string, string) bool
 	if w.sortByNumber {
-		sort.Stable(byNumber(lines))
+		less = func(x, y string) bool { return lineNumber(x) > lineNumber(y) }
 	} else {
-		sort.Stable(bySecondField(lines))
+		less = func(x, y string) bool { return skipField(x) < skipField(y) }
 	}
-	w.Addr("0/^[0-9]/,")
-	w.Write("data", []byte(strings.Join(lines, "\n")+suffix))
+	if err := w.Sort(less); err != nil {
+		w.Err(err.Error())
+	}
 	w.Addr("0")
 	w.Ctl("dot=addr")
 	w.Ctl("show")
-}
-
-type byNumber []string
-
-func (x byNumber) Len() int      { return len(x) }
-func (x byNumber) Swap(i, j int) { x[i], x[j] = x[j], x[i] }
-func (x byNumber) Less(i, j int) bool {
-	return lineNumber(x[i]) > lineNumber(x[j])
 }
 
 func lineNumber(s string) int {
@@ -614,14 +562,6 @@ func lineNumber(s string) int {
 		n = n*10 + int(s[j]-'0')
 	}
 	return n
-}
-
-type bySecondField []string
-
-func (x bySecondField) Len() int      { return len(x) }
-func (x bySecondField) Swap(i, j int) { x[i], x[j] = x[j], x[i] }
-func (x bySecondField) Less(i, j int) bool {
-	return skipField(x[i]) < skipField(x[j])
 }
 
 func skipField(s string) string {
@@ -635,140 +575,61 @@ func skipField(s string) string {
 	return s[i:]
 }
 
-func (w *awin) loop() {
-	defer w.exit()
-	for e := range w.EventChan() {
-		switch e.C2 {
-		case 'x', 'X': // execute
-			cmd := strings.TrimSpace(string(e.Text))
-			if cmd == "Get" {
-				w.load()
-				break
-			}
-			if cmd == "Put" {
-				w.put()
-				break
-			}
-			if cmd == "Del" {
-				w.Ctl("del")
-				break
-			}
-			if cmd == "New" {
-				w.createIssue()
-				break
-			}
-			if cmd == "Sort" {
-				if w.mode != modeQuery {
-					w.err("can only sort issue list windows")
-					break
-				}
-				w.sortByNumber = !w.sortByNumber
-				w.sort()
-				break
-			}
-			if cmd == "Bulk" {
-				// TODO(rsc): If Bulk has an argument, treat as search query and use results?
-				if w.mode != modeQuery {
-					w.err("can only start bulk edit in issue list windows")
-					break
-				}
-				text := w.selection()
-				if text == "" {
-					data, err := w.ReadAll("body")
-					if err != nil {
-						w.err(fmt.Sprintf("%v", err))
-						break
-					}
-					text = string(data)
-				}
-				w.newBulkEdit([]byte(text))
-				break
-			}
-			if strings.HasPrefix(cmd, "Search ") {
-				w.newSearch("search", strings.TrimSpace(strings.TrimPrefix(cmd, "Search")))
-				break
-			}
-			if strings.HasPrefix(cmd, "Milestone ") {
-				text := w.selection()
-				w.setMilestone(strings.TrimSpace(strings.TrimPrefix(cmd, "Milestone")), text)
-				break
-			}
-			w.WriteEvent(e)
-		case 'l', 'L': // look
-			// TODO(rsc): Expand selection, especially for URLs.
-			w.loadText(e)
-			if !w.look(string(e.Text)) {
-				w.WriteEvent(e)
-			}
+func (w *awin) Execute(cmd string) bool {
+	switch cmd {
+	case "Get":
+		w.load()
+		return true
+	case "Put":
+		w.put()
+		return true
+	case "Del":
+		w.Ctl("del")
+		return true
+	case "New":
+		w.createIssue()
+		return true
+	case "Sort":
+		if w.mode != modeQuery {
+			w.Err("can only sort issue list windows")
+			break
 		}
+		w.sortByNumber = !w.sortByNumber
+		w.sort()
+		return true
+	case "Bulk":
+		// TODO(rsc): If Bulk has an argument, treat as search query and use results?
+		if w.mode != modeQuery {
+			w.Err("can only start bulk edit in issue list windows")
+			return true
+		}
+		text := w.Selection()
+		if text == "" {
+			data, err := w.ReadAll("body")
+			if err != nil {
+				w.Err(fmt.Sprintf("%v", err))
+				return true
+			}
+			text = string(data)
+		}
+		w.newBulkEdit([]byte(text))
+		return true
 	}
+
+	if strings.HasPrefix(cmd, "Search ") {
+		w.newSearch(w.prefix, "search", strings.TrimSpace(strings.TrimPrefix(cmd, "Search")))
+		return true
+	}
+	if strings.HasPrefix(cmd, "Milestone ") {
+		text := w.Selection()
+		w.setMilestone(strings.TrimSpace(strings.TrimPrefix(cmd, "Milestone")), text)
+		return true
+	}
+
+	return false
 }
 
-func (w *awin) printTabbed(text string) {
-	lines := strings.SplitAfter(text, "\n")
-	var allRows [][]string
-	for _, line := range lines {
-		if line == "" {
-			continue
-		}
-		line = strings.TrimSuffix(line, "\n")
-		allRows = append(allRows, strings.Split(line, "\t"))
-	}
-
-	var buf bytes.Buffer
-	for len(allRows) > 0 {
-		if row := allRows[0]; len(row) <= 1 {
-			if len(row) > 0 {
-				buf.WriteString(row[0])
-			}
-			buf.WriteString("\n")
-			allRows = allRows[1:]
-			continue
-		}
-
-		i := 0
-		for i < len(allRows) && len(allRows[i]) > 1 {
-			i++
-		}
-
-		rows := allRows[:i]
-		allRows = allRows[i:]
-
-		var wid []int
-
-		if w.font != nil {
-			for _, row := range rows {
-				for len(wid) < len(row) {
-					wid = append(wid, 0)
-				}
-				for i, col := range row {
-					n := w.font.StringWidth(col)
-					if wid[i] < n {
-						wid[i] = n
-					}
-				}
-			}
-		}
-
-		for _, row := range rows {
-			for i, col := range row {
-				buf.WriteString(col)
-				if i == len(row)-1 {
-					break
-				}
-				if w.font == nil || w.tab == 0 {
-					buf.WriteString("\t")
-					continue
-				}
-				pos := w.font.StringWidth(col)
-				for pos <= wid[i] {
-					buf.WriteString("\t")
-					pos += w.tab - pos%w.tab
-				}
-			}
-			buf.WriteString("\n")
-		}
-	}
-
-	w.Write("body", buf.Bytes())
+func (w *awin) loop() {
+	defer w.exit()
+	w.EventLoop(w)
 }

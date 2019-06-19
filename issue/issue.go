@@ -231,6 +231,7 @@ package main // import "rsc.io/github/issue"
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -251,14 +252,13 @@ import (
 )
 
 var (
-	acmeFlag     = flag.Bool("a", false, "open in new acme window")
-	editFlag     = flag.Bool("e", false, "edit in system editor")
-	jsonFlag     = flag.Bool("json", false, "write JSON output")
-	project      = flag.String("p", "golang/go", "GitHub owner/repo name")
-	rawFlag      = flag.Bool("raw", false, "do no processing of markdown")
-	tokenFile    = flag.String("token", "", "read GitHub token personal access token from `file` (default $HOME/.github-issue-token)")
-	projectOwner = ""
-	projectRepo  = ""
+	acmeFlag  = flag.Bool("a", false, "open in new acme window")
+	editFlag  = flag.Bool("e", false, "edit in system editor")
+	jsonFlag  = flag.Bool("json", false, "write JSON output")
+	project   = flag.String("p", "golang/go", "GitHub owner/repo name")
+	rawFlag   = flag.Bool("raw", false, "do no processing of markdown")
+	tokenFile = flag.String("token", "", "read GitHub token personal access token from `file` (default $HOME/.github-issue-token)")
+	logHTTP   = flag.Bool("loghttp", false, "log http requests")
 )
 
 func usage() {
@@ -288,12 +288,14 @@ func main() {
 		log.Fatal("cannot use -e with -acme")
 	}
 
+	if *logHTTP {
+		http.DefaultTransport = newLogger(http.DefaultTransport)
+	}
+
 	f := strings.Split(*project, "/")
 	if len(f) != 2 {
 		log.Fatal("invalid form for -p argument: must be owner/repo, like golang/go")
 	}
-	projectOwner = f[0]
-	projectRepo = f[1]
 
 	loadAuth()
 
@@ -304,7 +306,7 @@ func main() {
 	q := strings.Join(flag.Args(), " ")
 
 	if *editFlag && q == "new" {
-		editIssue([]byte(createTemplate), new(github.Issue))
+		editIssue(*project, []byte(createTemplate), new(github.Issue))
 		return
 	}
 
@@ -312,21 +314,21 @@ func main() {
 	if n != 0 {
 		if *editFlag {
 			var buf bytes.Buffer
-			issue, err := showIssue(&buf, n)
+			issue, err := showIssue(&buf, *project, n)
 			if err != nil {
 				log.Fatal(err)
 			}
-			editIssue(buf.Bytes(), issue)
+			editIssue(*project, buf.Bytes(), issue)
 			return
 		}
-		if _, err := showIssue(os.Stdout, n); err != nil {
+		if _, err := showIssue(os.Stdout, *project, n); err != nil {
 			log.Fatal(err)
 		}
 		return
 	}
 
 	if *editFlag {
-		all, err := searchIssues(q)
+		all, err := searchIssues(*project, q)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -334,29 +336,29 @@ func main() {
 			log.Fatal("no issues matched search")
 		}
 		sort.Sort(issuesByTitle(all))
-		bulkEditIssues(all)
+		bulkEditIssues(*project, all)
 		return
 	}
 
-	if err := showQuery(os.Stdout, q); err != nil {
+	if err := showQuery(os.Stdout, *project, q); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func showIssue(w io.Writer, n int) (*github.Issue, error) {
-	issue, _, err := client.Issues.Get(projectOwner, projectRepo, n)
+func showIssue(w io.Writer, project string, n int) (*github.Issue, error) {
+	issue, _, err := client.Issues.Get(context.TODO(), projectOwner(project), projectRepo(project), n)
 	if err != nil {
 		return nil, err
 	}
-	updateIssueCache(issue)
-	return issue, printIssue(w, issue)
+	updateIssueCache(project, issue)
+	return issue, printIssue(w, project, issue)
 }
 
 const timeFormat = "2006-01-02 15:04:05"
 
-func printIssue(w io.Writer, issue *github.Issue) error {
+func printIssue(w io.Writer, project string, issue *github.Issue) error {
 	if *jsonFlag {
-		showJSONIssue(w, issue)
+		showJSONIssue(w, project, issue)
 		return nil
 	}
 
@@ -368,7 +370,7 @@ func printIssue(w io.Writer, issue *github.Issue) error {
 	}
 	fmt.Fprintf(w, "Labels: %s\n", strings.Join(getLabelNames(issue.Labels), " "))
 	fmt.Fprintf(w, "Milestone: %s\n", getMilestoneTitle(issue.Milestone))
-	fmt.Fprintf(w, "URL: https://github.com/%s/%s/issues/%d\n", projectOwner, projectRepo, getInt(issue.Number))
+	fmt.Fprintf(w, "URL: https://github.com/%s/%s/issues/%d\n", projectOwner(project), projectRepo(project), getInt(issue.Number))
 
 	fmt.Fprintf(w, "\nReported by %s (%s)\n", getUserLogin(issue.User), getTime(issue.CreatedAt).Format(timeFormat))
 	if issue.Body != nil {
@@ -385,7 +387,7 @@ func printIssue(w io.Writer, issue *github.Issue) error {
 	var output []string
 
 	for page := 1; ; {
-		list, resp, err := client.Issues.ListComments(projectOwner, projectRepo, getInt(issue.Number), &github.IssueListCommentsOptions{
+		list, resp, err := client.Issues.ListComments(context.TODO(), projectOwner(project), projectRepo(project), getInt(issue.Number), &github.IssueListCommentsOptions{
 			ListOptions: github.ListOptions{
 				Page:    page,
 				PerPage: 100,
@@ -418,7 +420,7 @@ func printIssue(w io.Writer, issue *github.Issue) error {
 	}
 
 	for page := 1; ; {
-		list, resp, err := client.Issues.ListIssueEvents(projectOwner, projectRepo, getInt(issue.Number), &github.ListOptions{
+		list, resp, err := client.Issues.ListIssueEvents(context.TODO(), projectOwner(project), projectRepo(project), getInt(issue.Number), &github.ListOptions{
 			Page:    page,
 			PerPage: 100,
 		})
@@ -441,7 +443,7 @@ func printIssue(w io.Writer, issue *github.Issue) error {
 				}
 				fmt.Fprintf(w, "\n* %s %s%s (%s)\n", getUserLogin(ev.Actor), event, id, getTime(ev.CreatedAt).Format(timeFormat))
 				if id != "" {
-					commit, _, err := client.Git.GetCommit(projectOwner, projectRepo, *ev.CommitID)
+					commit, _, err := client.Git.GetCommit(context.TODO(), projectOwner(project), projectRepo(project), *ev.CommitID)
 					if err == nil {
 						fmt.Fprintf(w, "\n\tAuthor: %s <%s> %s\n\tCommitter: %s <%s> %s\n\n\t%s\n",
 							getString(commit.Author.Name), getString(commit.Author.Email), getTime(commit.Author.Date).Format(timeFormat),
@@ -483,14 +485,14 @@ func printIssue(w io.Writer, issue *github.Issue) error {
 	return nil
 }
 
-func showQuery(w io.Writer, q string) error {
-	all, err := searchIssues(q)
+func showQuery(w io.Writer, project, q string) error {
+	all, err := searchIssues(project, q)
 	if err != nil {
 		return err
 	}
 	sort.Sort(issuesByTitle(all))
 	if *jsonFlag {
-		showJSONList(all)
+		showJSONList(project, all)
 		return nil
 	}
 	for _, issue := range all {
@@ -510,22 +512,22 @@ func (x issuesByTitle) Less(i, j int) bool {
 	return getInt(x[i].Number) < getInt(x[j].Number)
 }
 
-func searchIssues(q string) ([]*github.Issue, error) {
-	if opt, ok := queryToListOptions(q); ok {
-		return listRepoIssues(opt)
+func searchIssues(project, q string) ([]*github.Issue, error) {
+	if opt, ok := queryToListOptions(project, q); ok {
+		return listRepoIssues(project, opt)
 	}
 
 	var all []*github.Issue
 	for page := 1; ; {
 		// TODO(rsc): Rethink excluding pull requests.
-		x, resp, err := client.Search.Issues("type:issue state:open repo:"+*project+" "+q, &github.SearchOptions{
+		x, resp, err := client.Search.Issues(context.TODO(), "type:issue state:open repo:"+project+" "+q, &github.SearchOptions{
 			ListOptions: github.ListOptions{
 				Page:    page,
 				PerPage: 100,
 			},
 		})
 		for i := range x.Issues {
-			updateIssueCache(&x.Issues[i])
+			updateIssueCache(project, &x.Issues[i])
 			all = append(all, &x.Issues[i])
 		}
 		if err != nil {
@@ -539,7 +541,7 @@ func searchIssues(q string) ([]*github.Issue, error) {
 	return all, nil
 }
 
-func queryToListOptions(q string) (opt github.IssueListByRepoOptions, ok bool) {
+func queryToListOptions(project, q string) (opt github.IssueListByRepoOptions, ok bool) {
 	if strings.ContainsAny(q, `"'`) {
 		return
 	}
@@ -556,7 +558,7 @@ func queryToListOptions(q string) (opt github.IssueListByRepoOptions, ok bool) {
 			if opt.Milestone != "" || val == "" {
 				return
 			}
-			id := findMilestone(ioutil.Discard, &val)
+			id := findMilestone(ioutil.Discard, project, &val)
 			if id == nil {
 				return
 			}
@@ -612,7 +614,7 @@ func queryToListOptions(q string) (opt github.IssueListByRepoOptions, ok bool) {
 	return opt, true
 }
 
-func listRepoIssues(opt github.IssueListByRepoOptions) ([]*github.Issue, error) {
+func listRepoIssues(project string, opt github.IssueListByRepoOptions) ([]*github.Issue, error) {
 	var all []*github.Issue
 	for page := 1; ; {
 		xopt := opt
@@ -620,9 +622,9 @@ func listRepoIssues(opt github.IssueListByRepoOptions) ([]*github.Issue, error) 
 			Page:    page,
 			PerPage: 100,
 		}
-		issues, resp, err := client.Issues.ListByRepo(projectOwner, projectRepo, &xopt)
+		issues, resp, err := client.Issues.ListByRepo(context.TODO(), projectOwner(project), projectRepo(project), &xopt)
 		for i := range issues {
-			updateIssueCache(issues[i])
+			updateIssueCache(project, issues[i])
 			all = append(all, issues[i])
 		}
 		if err != nil {
@@ -645,9 +647,9 @@ func listRepoIssues(opt github.IssueListByRepoOptions) ([]*github.Issue, error) 
 	return save, nil
 }
 
-func loadMilestones() ([]*github.Milestone, error) {
+func loadMilestones(project string) ([]*github.Milestone, error) {
 	// NOTE(rsc): There appears to be no paging possible.
-	all, _, err := client.Issues.ListMilestones(projectOwner, projectRepo, &github.MilestoneListOptions{
+	all, _, err := client.Issues.ListMilestones(context.TODO(), projectOwner(project), projectRepo(project), &github.MilestoneListOptions{
 		State: "open",
 	})
 	if err != nil {
@@ -770,41 +772,46 @@ func getLabelNames(x []github.Label) []string {
 	return out
 }
 
-var issueCache struct {
-	sync.Mutex
-	m map[int]*github.Issue
+type projectAndNumber struct {
+	project string
+	number  int
 }
 
-func updateIssueCache(issue *github.Issue) {
+var issueCache struct {
+	sync.Mutex
+	m map[projectAndNumber]*github.Issue
+}
+
+func updateIssueCache(project string, issue *github.Issue) {
 	n := getInt(issue.Number)
 	if n == 0 {
 		return
 	}
 	issueCache.Lock()
 	if issueCache.m == nil {
-		issueCache.m = make(map[int]*github.Issue)
+		issueCache.m = make(map[projectAndNumber]*github.Issue)
 	}
-	issueCache.m[n] = issue
+	issueCache.m[projectAndNumber{project, n}] = issue
 	issueCache.Unlock()
 }
 
-func bulkReadIssuesCached(ids []int) ([]*github.Issue, error) {
+func bulkReadIssuesCached(project string, ids []int) ([]*github.Issue, error) {
 	var all []*github.Issue
 	issueCache.Lock()
 	for _, id := range ids {
-		all = append(all, issueCache.m[id])
+		all = append(all, issueCache.m[projectAndNumber{project, id}])
 	}
 	issueCache.Unlock()
 
 	var errbuf bytes.Buffer
 	for i, id := range ids {
 		if all[i] == nil {
-			issue, _, err := client.Issues.Get(projectOwner, projectRepo, id)
+			issue, _, err := client.Issues.Get(context.TODO(), projectOwner(project), projectRepo(project), id)
 			if err != nil {
 				fmt.Fprintf(&errbuf, "reading #%d: %v\n", id, err)
 				continue
 			}
-			updateIssueCache(issue)
+			updateIssueCache(project, issue)
 			all[i] = issue
 		}
 	}
@@ -840,8 +847,8 @@ type Comment struct {
 	Text   string
 }
 
-func showJSONIssue(w io.Writer, issue *github.Issue) {
-	data, err := json.MarshalIndent(toJSONWithComments(issue), "", "\t")
+func showJSONIssue(w io.Writer, project string, issue *github.Issue) {
+	data, err := json.MarshalIndent(toJSONWithComments(project, issue), "", "\t")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -849,10 +856,10 @@ func showJSONIssue(w io.Writer, issue *github.Issue) {
 	w.Write(data)
 }
 
-func showJSONList(all []*github.Issue) {
+func showJSONList(project string, all []*github.Issue) {
 	j := []*Issue{} // non-nil for json
 	for _, issue := range all {
-		j = append(j, toJSON(issue))
+		j = append(j, toJSON(project, issue))
 	}
 	data, err := json.MarshalIndent(j, "", "\t")
 	if err != nil {
@@ -862,17 +869,17 @@ func showJSONList(all []*github.Issue) {
 	os.Stdout.Write(data)
 }
 
-func toJSON(issue *github.Issue) *Issue {
+func toJSON(project string, issue *github.Issue) *Issue {
 	j := &Issue{
 		Number:    getInt(issue.Number),
-		Ref:       fmt.Sprintf("%s/%s#%d\n", projectOwner, projectRepo, getInt(issue.Number)),
+		Ref:       fmt.Sprintf("%s/%s#%d\n", projectOwner(project), projectRepo(project), getInt(issue.Number)),
 		Title:     getString(issue.Title),
 		State:     getString(issue.State),
 		Assignee:  getUserLogin(issue.Assignee),
 		Closed:    getTime(issue.ClosedAt),
 		Labels:    getLabelNames(issue.Labels),
 		Milestone: getMilestoneTitle(issue.Milestone),
-		URL:       fmt.Sprintf("https://github.com/%s/%s/issues/%d\n", projectOwner, projectRepo, getInt(issue.Number)),
+		URL:       fmt.Sprintf("https://github.com/%s/%s/issues/%d\n", projectOwner(project), projectRepo(project), getInt(issue.Number)),
 		Reporter:  getUserLogin(issue.User),
 		Created:   getTime(issue.CreatedAt),
 		Text:      getString(issue.Body),
@@ -884,10 +891,10 @@ func toJSON(issue *github.Issue) *Issue {
 	return j
 }
 
-func toJSONWithComments(issue *github.Issue) *Issue {
-	j := toJSON(issue)
+func toJSONWithComments(project string, issue *github.Issue) *Issue {
+	j := toJSON(project, issue)
 	for page := 1; ; {
-		list, resp, err := client.Issues.ListComments(projectOwner, projectRepo, getInt(issue.Number), &github.IssueListCommentsOptions{
+		list, resp, err := client.Issues.ListComments(context.TODO(), projectOwner(project), projectRepo(project), getInt(issue.Number), &github.IssueListCommentsOptions{
 			ListOptions: github.ListOptions{
 				Page:    page,
 				PerPage: 100,
@@ -909,4 +916,55 @@ func toJSONWithComments(issue *github.Issue) *Issue {
 		page = resp.NextPage
 	}
 	return j
+}
+
+func newLogger(t http.RoundTripper) http.RoundTripper {
+	return &loggingTransport{transport: t}
+}
+
+type loggingTransport struct {
+	transport http.RoundTripper
+	mu        sync.Mutex
+	active    []byte
+}
+
+func (t *loggingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	t.mu.Lock()
+	index := len(t.active)
+	start := time.Now()
+	fmt.Fprintf(os.Stderr, "HTTP: %s %s+ %s\n", timeFormat1(start), t.active, r.URL)
+	t.active = append(t.active, '|')
+	t.mu.Unlock()
+
+	resp, err := t.transport.RoundTrip(r)
+
+	last := r.URL.Path
+	if i := strings.LastIndex(last, "/"); i >= 0 {
+		last = last[i:]
+	}
+	display := last
+	if resp != nil {
+		display += " " + resp.Status
+	}
+	if err != nil {
+		display += " error: " + err.Error()
+	}
+	now := time.Now()
+
+	t.mu.Lock()
+	t.active[index] = '-'
+	fmt.Fprintf(os.Stderr, "HTTP: %s %s %s (%.3fs)\n", timeFormat1(now), t.active, display, now.Sub(start).Seconds())
+	t.active[index] = ' '
+	n := len(t.active)
+	for n%4 == 0 && n >= 4 && t.active[n-1] == ' ' && t.active[n-2] == ' ' && t.active[n-3] == ' ' && t.active[n-4] == ' ' {
+		t.active = t.active[:n-4]
+		n -= 4
+	}
+	t.mu.Unlock()
+
+	return resp, err
+}
+
+func timeFormat1(t time.Time) string {
+	return t.Format("15:04:05.000")
 }
