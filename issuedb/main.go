@@ -1,3 +1,7 @@
+// Copyright 2016 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
 package main
 
 import (
@@ -44,16 +48,7 @@ type RawJSON struct {
 	Issue   int64
 	Type    string
 	JSON    []byte `dbstore:",blob"`
-}
-
-type History struct {
-	URL     string `dbstore:",key"`
-	Project string
-	Issue   int64
 	Time    string
-	Who     string
-	Action  string `dbstore:",key"`
-	Text    string
 }
 
 var (
@@ -85,7 +80,6 @@ func main() {
 	storage.Register(new(Auth))
 	storage.Register(new(ProjectSync))
 	storage.Register(new(RawJSON))
-	storage.Register(new(History))
 
 	flag.Usage = usage
 	flag.Parse()
@@ -164,24 +158,62 @@ func main() {
 			log.Fatalf("reading projects: %v", err)
 		}
 		for _, proj := range projects {
-			doSync(&proj, args[0] == "resync")
+			if match(proj.Name, args[1:]) {
+				doSync(&proj, args[0] == "resync")
+			}
+		}
+		for _, arg := range args[1:] {
+			if arg != didArg {
+				log.Printf("unknown project: %s", arg)
+			}
 		}
 
-	case "refill":
-		refill()
+	case "retime":
+		retime()
 
-	case "dash":
-		dash()
+	case "todo":
+		var projects []ProjectSync
+		if err := storage.Select(db, &projects, ""); err != nil {
+			log.Fatalf("reading projects: %v", err)
+		}
+		for _, proj := range projects {
+			if match(proj.Name, args[1:]) {
+				todo(&proj)
+			}
+		}
+		for _, arg := range args[1:] {
+			if arg != didArg {
+				log.Printf("unknown project: %s", arg)
+			}
+		}
 	}
+}
+
+const didArg = "\x00"
+
+func match(name string, args []string) bool {
+	if len(args) == 0 {
+		return true
+	}
+	ok := false
+	for i, arg := range args {
+		if name == arg {
+			args[i] = didArg
+			ok = true
+		}
+	}
+	return ok
 }
 
 func doSync(proj *ProjectSync, resync bool) {
 	println("WOULD SYNC", proj.Name)
-	syncIssueComments(proj)
 	syncIssues(proj)
-	syncIssueEvents(proj, 0)
+	syncIssueComments(proj)
 	if resync {
+		syncIssueEvents(proj, 0, true)
 		syncIssueEventsByIssue(proj)
+	} else {
+		syncIssueEvents(proj, 0, false)
 	}
 }
 
@@ -222,10 +254,11 @@ func downloadByDate(proj *ProjectSync, api string, since *string, sinceName stri
 		var last string
 		for _, m := range all {
 			var meta struct {
-				URL      string
-				Updated  string `json:"updated_at"`
-				Number   int64  // for /issues feed
-				IssueURL string `json:"issue_url"` // for /issues/comments feed
+				URL       string
+				Updated   string `json:"updated_at"`
+				Number    int64  // for /issues feed
+				IssueURL  string `json:"issue_url"` // for /issues/comments feed
+				CreatedAt string `json:"created_at"`
 			}
 			if err := json.Unmarshal(m, &meta); err != nil {
 				return fmt.Errorf("parsing message: %v", err)
@@ -253,6 +286,7 @@ func downloadByDate(proj *ProjectSync, api string, since *string, sinceName stri
 			}
 			raw.Type = api
 			raw.JSON = m
+			raw.Time = meta.CreatedAt
 			if err := storage.Insert(tx, &raw); err != nil {
 				return fmt.Errorf("writing JSON to database: %v", err)
 			}
@@ -274,7 +308,7 @@ func downloadByDate(proj *ProjectSync, api string, since *string, sinceName stri
 	}
 }
 
-func syncIssueEvents(proj *ProjectSync, id int) {
+func syncIssueEvents(proj *ProjectSync, id int, short bool) {
 	tx, err := db.Begin()
 	if err != nil {
 		log.Fatalf("starting db transaction: %v", err)
@@ -317,7 +351,7 @@ func syncIssueEvents(proj *ProjectSync, id int) {
 				firstID = meta.ID
 				firstETag = resp.Header.Get("Etag")
 			}
-			if id == 0 && proj.EventID != 0 && meta.ID <= proj.EventID {
+			if id == 0 && (proj.EventID != 0 && meta.ID <= proj.EventID || short) {
 				return done
 			}
 
@@ -366,12 +400,19 @@ func syncIssueEventsByIssue(proj *ProjectSync) {
 		log.Fatal(err)
 	}
 	var ids []int
+	suffix := "repos/" + proj.Name + "/issues/"
 	for rows.Next() {
 		var url string
 		if err := rows.Scan(&url); err != nil {
 			log.Fatal(err)
 		}
 		i := strings.LastIndex(url, "/")
+		if !strings.HasSuffix(url[:i+1], suffix) {
+			continue
+		}
+		if url[i+1:] < "30140" {
+			continue
+		}
 		id, err := strconv.Atoi(url[i+1:])
 		if err != nil {
 			log.Fatal(url, err)
@@ -380,7 +421,7 @@ func syncIssueEventsByIssue(proj *ProjectSync) {
 	}
 	for _, id := range ids {
 		println("ID", id)
-		syncIssueEvents(proj, id)
+		syncIssueEvents(proj, id, false)
 	}
 }
 
@@ -400,7 +441,7 @@ func downloadPages(url, etag string, do func(*http.Response, []json.RawMessage) 
 		if err != nil {
 			return err
 		}
-		println("RESP:", js(resp.Header))
+		//println("RESP:", js(resp.Header))
 
 		data, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
@@ -418,9 +459,10 @@ func downloadPages(url, etag string, do func(*http.Response, []json.RawMessage) 
 					}
 				}
 			}
-			if resp.StatusCode == 500 {
+			if resp.StatusCode == 500 || resp.StatusCode == 502 {
 				nfail++
 				if nfail < 2 {
+					println("REPEAT:", resp.Status, string(data))
 					time.Sleep(time.Duration(nfail) * 2 * time.Second)
 					goto again
 				}
@@ -498,15 +540,19 @@ type ghIssueEvent struct {
 	Actor struct {
 		Login string `json:"login"`
 	} `json:"actor"`
-	Event string `json:"event"`
-	Label struct {
+	Event  string `json:"event"`
+	Labels []struct {
 		Name string `json:"name"`
-	} `json:"label"`
-	CreatedAt string `json:"created_at"`
-	CommitID  string `json:"commit_id"`
-	Assignee  struct {
+	} `json:"labels"`
+	LockReason string `json:"lock_reason"`
+	CreatedAt  string `json:"created_at"`
+	CommitID   string `json:"commit_id"`
+	Assigner   struct {
 		Login string `json:"login"`
-	} `json:"assignee"`
+	} `json:"assigner"`
+	Assignees []struct {
+		Login string `json:"login"`
+	} `json:"assignees"`
 	Milestone struct {
 		Title string `json:"title"`
 	} `json:"milestone"`
@@ -518,6 +564,7 @@ type ghIssueEvent struct {
 
 type ghIssueComment struct {
 	IssueURL string `json:"issue_url"`
+	HTMLURL  string `json:"html_url"`
 	User     struct {
 		Login string `json:"login"`
 	} `json:"user"`
@@ -527,32 +574,36 @@ type ghIssueComment struct {
 }
 
 type ghIssue struct {
-	URL  string `json:"url"`
-	User struct {
+	URL     string `json:"url"`
+	HTMLURL string `json:"html_url"`
+	User    struct {
 		Login string `json:"login"`
 	} `json:"user"`
 	Title     string `json:"title"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
+	ClosedAt  string `json:"closed_at"`
 	Body      string `json:"body"`
-	Assignee  struct {
+	Assignees []struct {
 		Login string `json:"login"`
-	} `json:"assignee"`
+	} `json:"assignees"`
 	Milestone struct {
 		Title string `json:"title"`
 	} `json:"milestone"`
-	State       string    `json:"state"`
-	PullRequest *struct{} `json:"pull_request"`
+	State            string    `json:"state"`
+	PullRequest      *struct{} `json:"pull_request"`
+	Locked           bool
+	ActiveLockReason string `json:"active_lock_reason"`
+	Labels           []struct {
+		Name string `json:"name"`
+	} `json:"labels"`
 }
 
-func refill() {
-	if _, err := db.Exec("delete from History"); err != nil {
-		log.Fatal(err)
-	}
+func retime() {
 	last := ""
 	for {
 		var all []RawJSON
-		if err := storage.Select(db, &all, "where URL > ? order by URL asc limit 100", last); err != nil {
+		if err := storage.Select(db, &all, "where URL > ? and Time = ? order by URL asc limit 100", last, ""); err != nil {
 			log.Fatal("sql: %v", err)
 		}
 		if len(all) == 0 {
@@ -564,125 +615,23 @@ func refill() {
 			log.Fatal(err)
 		}
 		for _, m := range all {
-			last = m.URL
-			switch m.Type {
-			default:
-				println("TYPE", m.Type)
-			case "/issues/events":
-				var ev ghIssueEvent
-				if err := json.Unmarshal(m.JSON, &ev); err != nil {
-					log.Printf("unmarshal: %v\n%s", err, m.JSON)
-					continue
-				}
-				var h History
-				h.URL = m.URL
-				h.Project = m.Project
-				h.Issue = m.Issue
-				h.Time = ev.CreatedAt
-				h.Who = ev.Actor.Login
-				h.Action = ev.Event
-				expectText := true
-				switch ev.Event {
-				default:
-					log.Printf("unknown event: %s\n%s", ev.Event, m.JSON)
-					expectText = false
-				case "subscribed", "unsubscribed", "reopened", "locked", "unlocked", "head_ref_deleted", "head_ref_restored", "mentioned":
-					// ok
-					expectText = false
-				case "closed", "merged", "referenced":
-					h.Text = ev.CommitID
-					expectText = ev.Event == "merged"
-				case "assigned", "unassigned":
-					h.Text = ev.Assignee.Login
-				case "labeled", "unlabeled":
-					h.Text = ev.Label.Name
-				case "milestoned", "demilestoned":
-					h.Text = ev.Milestone.Title
-				case "renamed":
-					if ev.Rename.From != "" {
-						h.Text = ev.Rename.From + " → " + ev.Rename.To
-					}
-				}
-				if expectText && h.Text == "" {
-					log.Printf("missing text: %s\n%s", ev.Event, m.JSON)
-				}
-				if err := storage.Insert(tx, &h); err != nil {
-					log.Fatal(err)
-				}
-
-			case "/issues/comments":
-				var ev ghIssueComment
-				if err := json.Unmarshal(m.JSON, &ev); err != nil {
-					log.Printf("unmarshal: %v\n%s", err, m.JSON)
-					continue
-				}
-				i := strings.LastIndex(ev.IssueURL, "/")
-				n, err := strconv.ParseInt(ev.IssueURL[i+1:], 10, 64)
-				if err != nil {
-					log.Printf("bad issue comment:\n%s", m.JSON)
-					continue
-				}
-				var h History
-				h.URL = m.URL
-				h.Project = m.Project
-				h.Issue = n
-				h.Time = ev.UpdatedAt
-				h.Who = ev.User.Login
-				h.Action = "comment"
-				h.Text = ev.Body
-				if err := storage.Insert(tx, &h); err != nil {
-					log.Fatal(err)
-				}
-
-			case "/issues":
-				var ev ghIssue
-				if err := json.Unmarshal(m.JSON, &ev); err != nil {
-					log.Printf("unmarshal: %v\n%s", err, m.JSON)
-					continue
-				}
-				i := strings.LastIndex(ev.URL, "/")
-				n, err := strconv.ParseInt(ev.URL[i+1:], 10, 64)
-				if err != nil {
-					log.Printf("bad issue:\n%s", m.JSON)
-					continue
-				}
-				var h History
-				h.URL = m.URL
-				h.Project = m.Project
-				h.Issue = n
-				h.Time = ev.CreatedAt // best we can do
-				h.Who = ev.User.Login
-				h.Action = "issue"
-				if ev.PullRequest != nil {
-					h.Action = "pullrequest"
-				}
-				h.Text = ev.Body
-				if err := storage.Insert(tx, &h); err != nil {
-					log.Fatal(err)
-				}
-
-				if ev.Assignee.Login != "" {
-					h.Action = "assign?"
-					h.Text = ev.Assignee.Login
-					if err := storage.Insert(tx, &h); err != nil {
-						log.Fatal(err)
-					}
-				}
-				if ev.Milestone.Title != "" {
-					h.Action = "milestone?"
-					h.Text = ev.Assignee.Login
-					if err := storage.Insert(tx, &h); err != nil {
-						log.Fatal(err)
-					}
-				}
-				if ev.State != "open" {
-					h.Action = "close?"
-					h.Text = ""
-					if err := storage.Insert(tx, &h); err != nil {
-						log.Fatal(err)
-					}
-				}
+			var meta struct {
+				CreatedAt string `json:"created_at"`
 			}
+			if err := json.Unmarshal(m.JSON, &meta); err != nil {
+				log.Fatal(err)
+			}
+			if meta.CreatedAt == "" {
+				log.Fatalf("missing created_at: %s", m.JSON)
+			}
+			tm, err := time.Parse(time.RFC3339, meta.CreatedAt)
+			if err != nil {
+				log.Fatalf("parse: %v", err)
+			}
+			if _, err := tx.Exec("update RawJSON set Time = ? where URL = ?", tm.UTC().Format(time.RFC3339Nano), m.URL); err != nil {
+				log.Fatal(err)
+			}
+			last = m.URL
 		}
 		if err := tx.Commit(); err != nil {
 			log.Fatal(err)
