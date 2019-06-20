@@ -21,10 +21,9 @@ golang.org/x/sys v0.0.0-20190215142949-d0b11bdaac8a/go.mod h1:STP8DvDyc/dI5b8T5h
 golang.org/x/text v0.3.0/go.mod h1:NqM8EUOU14njkJ3fqMW+pc6Ldnwhi/IjpwHt7yyuwOQ=
 google.golang.org/appengine v1.4.0 h1:/wp5JvzpHIxhs/dumFmF7BXTf3Z+dd4uXta4kVyO508=
 google.golang.org/appengine v1.4.0/go.mod h1:xpcJRLb0r/rnEns0DIKYYv+WjYCduHsrkT7/EB5XEv4=
-rsc.io/dbstore v0.1.0 h1:+AbISFg2oC7ao/AbwvbyrQta47JGdQmszuLx7NTxHZo=
-rsc.io/dbstore v0.1.0/go.mod h1:S5AC832r934Hy7KuyJ3F6t1Y8C3UGLSwPWPH/QOCiSo=
-rsc.io/sqlite v0.0.0-20151027002647-c7a7bd4dbacb h1:MjPJB3CPzDABnyEgV3L8sINfsihcGbAyuL90NyqDiDE=
-rsc.io/sqlite v0.0.0-20151027002647-c7a7bd4dbacb/go.mod h1:fqHuveM9iIqMzjD0WiZIvKYMty/WqTo2bxE9+zC54WE=
+rsc.io/dbstore v0.1.1 h1:LI4gBJUwbejn0wHJWe0KTwgCM33zUVP3BsNz5y2fkEE=
+rsc.io/dbstore v0.1.1/go.mod h1:zI7k1PCSLg9r/T2rBM4E/SctbGmqdtt3kjQSemVh1Rs=
+rsc.io/sqlite v0.5.0/go.mod h1:fqHuveM9iIqMzjD0WiZIvKYMty/WqTo2bxE9+zC54WE=
 rsc.io/sqlite v1.0.0 h1:zUGL/JDeFfblrma2rToXG+fUsGZe+CShUHI3KlUNwQc=
 rsc.io/sqlite v1.0.0/go.mod h1:bRoHdqsJCgrcQDvBeCS454l4kLoFAQKHdwfwpoweIOo=
 rsc.io/todo v0.0.2 h1:6qozK00ZDVU0kVbMk5OyJz0+eBPOIw0EvDUCRmzKFag=

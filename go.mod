@@ -8,7 +8,7 @@ require (
 	github.com/google/go-querystring v1.0.0 // indirect
 	golang.org/x/net v0.0.0-20190607181551-461777fb6f67 // indirect
 	golang.org/x/oauth2 v0.0.0-20190604053449-0f29369cfe45
-	rsc.io/dbstore v0.1.0
+	rsc.io/dbstore v0.1.1
 	rsc.io/sqlite v1.0.0
 	rsc.io/todo v0.0.2
 )
