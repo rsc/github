@@ -1,0 +1,182 @@
+{{define "main"}}
+// Copyright 2022 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+package schema
+
+import (
+	"encoding/json"
+	"html/template"
+	"fmt"
+)
+
+var (
+	_ = template.Must
+	_ = fmt.Sprint
+	_ = json.Marshal
+)
+
+{{range .Types}}
+{{registerType .Name}}
+{{end}}
+
+{{range .Types}}
+{{decltype .}}
+{{end}}
+
+{{end}}
+
+{{define "decltype"}}
+{{doc . -}}
+{{if eq .Kind "INPUT_OBJECT" -}}
+{{declinputobject .}}
+{{else if eq .Kind "OBJECT" -}}
+{{declobject .}}
+{{else if eq .Kind "ENUM" -}}
+{{declenum .}}
+{{else if eq .Kind "INTERFACE" "UNION" -}}
+{{declinterface .}}
+{{else if eq .Kind "SCALAR" -}}
+{{declscalar .}}
+{{end}}
+{{end}}
+
+{{define "comment" -}}
+{{- if .}}
+{{- strings.TrimSuffix (strings.ReplaceAll . "\n" "\n// ") "."}}.
+{{- else}}undocumented.
+{{- end}}
+{{- end}}
+
+{{define "doc"}}
+// {{.Name}} ({{.Kind}}): {{comment .Description}}
+{{end}}
+
+{{define "declobject" -}}
+type {{.Name}} struct {
+{{range .Fields -}}
+// {{upper .Name}}: {{comment .Description}}
+{{if .IsDeprecated -}}
+//
+// Deprecated: {{comment .Description}}
+{{end -}}
+{{if .Args -}}
+//
+// Query arguments:
+{{range .Args -}}
+//   - {{.Name}} {{schematype .Type}}
+{{end -}}
+{{end -}}
+{{upper .Name}} {{gotype .Type}} {{gojson .}}
+
+{{end}}
+}
+
+{{range .Fields -}}
+func (x *{{$.Name}}) Get{{upper .Name}}() {{gotype .Type}} { return x.{{upper .Name}} }
+{{end}}
+{{end}}
+
+{{define "declinputobject" -}}
+type {{.Name}} struct {
+{{range .InputFields -}}
+// {{upper .Name}}: {{comment .Description}}
+{{if .IsDeprecated -}}
+//
+// Deprecated: {{comment .Description}}
+{{end -}}
+//
+// GraphQL type: {{schematype .Type}}
+{{upper .Name}} {{gotype .Type}} {{gojson .}}
+
+{{end}}
+}
+{{end}}
+
+{{/* TODO: interfaces have common fields*/}}
+{{define "declinterface" -}}
+// {{.Name}}_Interface: {{comment .Description}}
+//
+// Possible types:
+//
+{{range .PossibleTypes -}}
+//   - {{gotype .}}
+{{end -}}
+type {{.Name}}_Interface interface {
+	is{{.Name}}()
+{{range .Fields -}}
+	Get{{upper .Name}}() {{gotype .Type}}
+{{end -}}
+}
+{{range .PossibleTypes -}}
+func ({{gotype .}}) is{{$.Name}}() {}
+{{end}}
+
+type {{.Name}} struct {
+	Interface {{.Name}}_Interface
+}
+
+func (x *{{.Name}}) MarshalJSON() ([]byte, error) {
+	return json.Marshal(x.Interface)
+}
+
+func (x *{{.Name}}) UnmarshalJSON(js []byte) error {
+	var info struct { Typename string `json:"__Typename"` }
+	if err := json.Unmarshal(js, &info); err != nil {
+		return err
+	}
+	switch info.Typename {
+	default:
+		return fmt.Errorf("unexpected type %q for {{.Name}}", info.Typename)
+	{{range .PossibleTypes -}}
+	case "{{.Name}}":
+		x.Interface = new({{.Name}})
+	{{end -}}
+	}
+	return json.Unmarshal(js, x.Interface)
+}
+{{end}}
+
+{{define "gojson"}} `json:"{{.Name}},omitempty"`{{end}}
+
+{{define "declscalar" -}}
+type {{.Name}}
+{{- if eq .Name "Boolean"}} bool
+{{- else if eq .Name "Int"}} int
+{{- else if eq .Name "Float"}} float64
+{{- else}} string
+{{- end}}
+{{- end}}
+
+{{define "gotype"}}
+{{- if eq .Kind "OBJECT" "INPUT_OBJECT"}}*{{.Name}}
+{{- else if eq .Kind "ENUM" "INTERFACE" "UNION"}}{{.Name}}
+{{- else if eq .Kind "LIST"}}[]{{gotype .OfType}}
+{{- else if eq .Kind "NON_NULL"}}{{gotype .OfType}}
+{{- else if eq .Name "String"}}string
+{{- else if eq .Name "Boolean"}}bool
+{{- else if eq .Name "Int"}}int
+{{- else if eq .Name "Float"}}float64
+{{- else if eq .Name "HTML"}}template.HTML
+{{- else if and (eq .Kind "SCALAR") .Name}}{{.Name}}
+{{- else}}?? {{.Kind}} {{.Name}}
+{{- end}}
+{{- end}}
+
+{{define "schematype"}}
+{{- if .Name}}{{.Name}}
+{{- else if eq .Kind "LIST"}}[{{schematype .OfType}}]
+{{- else if eq .Kind "NON_NULL"}}{{schematype .OfType}}!
+{{- else}}?? {{.Kind}} {{.Name}}
+{{- end}}
+{{- end}}
+
+{{define "declenum" -}}
+type {{.Name}} string
+
+{{range .EnumValues}}
+// {{$.Name}}_{{.Name}}: {{comment .Description}}
+const {{$.Name}}_{{.Name}} {{$.Name}} = "{{.Name}}"
+{{end}}
+{{end}}

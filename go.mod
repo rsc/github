@@ -1,6 +1,6 @@
 module rsc.io/github
 
-go 1.13
+go 1.18
 
 require (
 	9fans.net/go v0.0.2
