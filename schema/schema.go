@@ -146,6 +146,9 @@ func (x *Actor) UnmarshalJSON(js []byte) error {
 	switch info.Typename {
 	default:
 		return fmt.Errorf("unexpected type %q for Actor", info.Typename)
+	case "":
+		x.Interface = nil
+		return nil
 	case "Bot":
 		x.Interface = new(Bot)
 	case "EnterpriseUserAccount":

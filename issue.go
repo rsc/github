@@ -15,6 +15,7 @@ const issueFields = `
   number
   title
   id
+  author { __typename login }
   closed
   closedAt
   createdAt
@@ -31,6 +32,28 @@ const issueFields = `
     }
   }
 `
+
+func (c *Client) Issue(org, repo string, n int) (*Issue, error) {
+	graphql := `
+	  query($Org: String!, $Repo: String!, $Number: Int!) {
+	    organization(login: $Org) {
+	      repository(name: $Repo) {
+	        issue(number: $Number) {
+	          ` + issueFields + `
+	        }
+	      }
+	    }
+	  }
+	`
+
+	vars := Vars{"Org": org, "Repo": repo, "Number": n}
+	q, err := c.GraphQLQuery(graphql, vars)
+	if err != nil {
+		return nil, err
+	}
+	issue := toIssue(q.Organization.Repository.Issue)
+	return issue, nil
+}
 
 func (c *Client) SearchLabels(org, repo, query string) ([]*Label, error) {
 	graphql := `
@@ -59,6 +82,34 @@ func (c *Client) SearchLabels(org, repo, query string) ([]*Label, error) {
 	}
 	return collect(c, graphql, vars, toLabel,
 		func(q *schema.Query) pager[*schema.Label] { return q.Repository.Labels },
+	)
+}
+
+func (c *Client) Discussions(org, repo string) ([]*Discussion, error) {
+	graphql := `
+	  query($Org: String!, $Repo: String!, $Cursor: String) {
+	    repository(owner: $Org, name: $Repo) {
+	      discussions(first: 100, after: $Cursor) {
+	        pageInfo {
+	          hasNextPage
+	          endCursor
+	        }
+	        totalCount
+	        nodes {
+	          locked
+	          number
+	          title
+	          repository { name owner { __typename login } }
+	          body
+	        }
+	      }
+	    }
+	  }
+	`
+
+	vars := Vars{"Org": org, "Repo": repo}
+	return collect(c, graphql, vars, toDiscussion,
+		func(q *schema.Query) pager[*schema.Discussion] { return q.Repository.Discussions },
 	)
 }
 
@@ -109,6 +160,8 @@ func (c *Client) IssueComments(issue *Issue) ([]*IssueComment, error) {
 	            createdAt
 	            publishedAt
 	            updatedAt
+	            issue { number }
+	            repository { name owner { __typename login } }
 	          }
 	        }
 	      }
@@ -119,6 +172,37 @@ func (c *Client) IssueComments(issue *Issue) ([]*IssueComment, error) {
 	vars := Vars{"Org": issue.Owner, "Repo": issue.Repo, "Number": issue.Number}
 	return collect(c, graphql, vars, toIssueComment,
 		func(q *schema.Query) pager[*schema.IssueComment] { return q.Repository.Issue.Comments },
+	)
+}
+
+func (c *Client) UserComments(user string) ([]*IssueComment, error) {
+	graphql := `
+	  query($User: String!, $Cursor: String) {
+	    user(login: $User) {
+	      issueComments(first: 100, after: $Cursor) {
+	        pageInfo {
+	          hasNextPage
+	          endCursor
+	        }
+	        totalCount
+	        nodes {
+	          author { __typename login }
+	          id
+	          body
+	          createdAt
+	          publishedAt
+	          updatedAt
+	          issue { number }
+	          repository { name owner { __typename login } }
+	        }
+	      }
+	    }
+	  }
+	`
+
+	vars := Vars{"User": user}
+	return collect(c, graphql, vars, toIssueComment,
+		func(q *schema.Query) pager[*schema.IssueComment] { return q.User.IssueComments },
 	)
 }
 
@@ -258,6 +342,18 @@ func (c *Client) EditIssueComment(comment *IssueComment, body string) error {
 	return err
 }
 
+func (c *Client) DeleteIssue(issue *Issue) error {
+	graphql := `
+	  mutation($Issue: ID!) {
+	    deleteIssue(input: {issueId: $Issue}) {
+	      clientMutationId
+	    }
+	  }
+	`
+	_, err := c.GraphQLMutation(graphql, Vars{"Issue": issue.ID})
+	return err
+}
+
 func (c *Client) RemilestoneIssue(issue *Issue, milestone *Milestone) error {
 	graphql := `
 	  mutation($Issue: ID!, $Milestone: ID!) {
@@ -312,6 +408,26 @@ func toLabel(s *schema.Label) *Label {
 	}
 }
 
+type Discussion struct {
+	Locked bool
+	Title  string
+	Number int
+	Owner  string
+	Repo   string
+	Body   string
+}
+
+func toDiscussion(s *schema.Discussion) *Discussion {
+	return &Discussion{
+		Locked: s.Locked,
+		Title:  s.Title,
+		Number: s.Number,
+		Owner:  s.Repository.Owner.Interface.(interface{ GetLogin() string }).GetLogin(),
+		Repo:   s.Repository.Name,
+		Body:   s.Body,
+	}
+}
+
 type Milestone struct {
 	Title string
 	ID    string
@@ -337,16 +453,22 @@ type Issue struct {
 	LastEditedAt time.Time
 	Labels       []*Label
 	Milestone    *Milestone
+	Author       string
 	Owner        string
 	Repo         string
 	Body         string
 }
 
 func toIssue(s *schema.Issue) *Issue {
+	author := ""
+	if s.Author.Interface != nil {
+		author = s.Author.Interface.GetLogin()
+	}
 	return &Issue{
 		ID:           string(s.Id),
 		Title:        s.Title,
 		Number:       s.Number,
+		Author:       author,
 		Closed:       s.Closed,
 		ClosedAt:     toTime(s.ClosedAt),
 		CreatedAt:    toTime(s.CreatedAt),
@@ -375,6 +497,9 @@ type IssueComment struct {
 	CreatedAt   time.Time
 	PublishedAt time.Time
 	UpdatedAt   time.Time
+	Issue       int
+	Owner       string
+	Repo        string
 }
 
 func toIssueComment(s *schema.IssueComment) *IssueComment {
@@ -385,6 +510,9 @@ func toIssueComment(s *schema.IssueComment) *IssueComment {
 		ID:          string(s.Id),
 		PublishedAt: toTime(s.PublishedAt),
 		UpdatedAt:   toTime(s.UpdatedAt),
+		Issue:       s.Issue.GetNumber(),
+		Owner:       s.Repository.Owner.Interface.(interface{ GetLogin() string }).GetLogin(),
+		Repo:        s.Repository.Name,
 	}
 }
 
