@@ -47,6 +47,12 @@ func Dial(user string) (*Client, error) {
 	return &Client{user: user, passwd: passwd}, nil
 }
 
+// NewClient returns a new client authenticating as the given GitHub user
+// with the given GitHub personal access token (of the form "ghp_....").
+func NewClient(user, token string) *Client {
+	return &Client{user: user, passwd: token}
+}
+
 // A Vars is a binding of GraphQL variables to JSON-able values (usually strings).
 type Vars map[string]any
 
