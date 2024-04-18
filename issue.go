@@ -403,7 +403,7 @@ func toLabel(s *schema.Label) *Label {
 		Name:        s.Name,
 		Description: s.Description,
 		ID:          string(s.Id),
-		Owner:       s.Repository.Owner.Interface.(interface{ GetLogin() string }).GetLogin(),
+		Owner:       toOwner(&s.Repository.Owner),
 		Repo:        s.Repository.Name,
 	}
 }
@@ -417,12 +417,26 @@ type Discussion struct {
 	Body   string
 }
 
+func toAuthor(a *schema.Actor) string {
+	if a != nil && a.Interface != nil {
+		return a.Interface.GetLogin()
+	}
+	return ""
+}
+
+func toOwner(o *schema.RepositoryOwner) string {
+	if o != nil && o.Interface != nil {
+		return o.Interface.(interface{ GetLogin() string }).GetLogin()
+	}
+	return ""
+}
+
 func toDiscussion(s *schema.Discussion) *Discussion {
 	return &Discussion{
 		Locked: s.Locked,
 		Title:  s.Title,
 		Number: s.Number,
-		Owner:  s.Repository.Owner.Interface.(interface{ GetLogin() string }).GetLogin(),
+		Owner:  toOwner(&s.Repository.Owner),
 		Repo:   s.Repository.Name,
 		Body:   s.Body,
 	}
@@ -460,20 +474,16 @@ type Issue struct {
 }
 
 func toIssue(s *schema.Issue) *Issue {
-	author := ""
-	if s.Author.Interface != nil {
-		author = s.Author.Interface.GetLogin()
-	}
 	return &Issue{
 		ID:           string(s.Id),
 		Title:        s.Title,
 		Number:       s.Number,
-		Author:       author,
+		Author:       toAuthor(&s.Author),
 		Closed:       s.Closed,
 		ClosedAt:     toTime(s.ClosedAt),
 		CreatedAt:    toTime(s.CreatedAt),
 		LastEditedAt: toTime(s.LastEditedAt),
-		Owner:        s.Repository.Owner.Interface.(interface{ GetLogin() string }).GetLogin(),
+		Owner:        toOwner(&s.Repository.Owner),
 		Repo:         s.Repository.Name,
 		Milestone:    toMilestone(s.Milestone),
 		Labels:       apply(toLabel, s.Labels.Nodes),
@@ -504,14 +514,14 @@ type IssueComment struct {
 
 func toIssueComment(s *schema.IssueComment) *IssueComment {
 	return &IssueComment{
-		Author:      s.Author.Interface.GetLogin(),
+		Author:      toAuthor(&s.Author),
 		Body:        s.Body,
 		CreatedAt:   toTime(s.CreatedAt),
 		ID:          string(s.Id),
 		PublishedAt: toTime(s.PublishedAt),
 		UpdatedAt:   toTime(s.UpdatedAt),
 		Issue:       s.Issue.GetNumber(),
-		Owner:       s.Repository.Owner.Interface.(interface{ GetLogin() string }).GetLogin(),
+		Owner:       toOwner(&s.Repository.Owner),
 		Repo:        s.Repository.Name,
 	}
 }
