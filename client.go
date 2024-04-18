@@ -25,8 +25,7 @@ import (
 // Client provides convenient methods for common operations.
 // To build others, see the [GraphQLQuery] and [GraphQLMutation] methods.
 type Client struct {
-	user   string
-	passwd string
+	token string
 }
 
 // Dial returns a Client authenticating as user.
@@ -40,17 +39,16 @@ type Client struct {
 //
 //	machine api.github.com login ken password ghp_123456789abcdef123456789abcdef12345
 func Dial(user string) (*Client, error) {
-	user, passwd, err := netrcAuth("api.github.com", user)
+	_, passwd, err := netrcAuth("api.github.com", user)
 	if err != nil {
 		return nil, err
 	}
-	return &Client{user: user, passwd: passwd}, nil
+	return &Client{token: passwd}, nil
 }
 
-// NewClient returns a new client authenticating as the given GitHub user
-// with the given GitHub personal access token (of the form "ghp_....").
-func NewClient(user, token string) *Client {
-	return &Client{user: user, passwd: token}
+// NewClient returns a new client using the given GitHub personal access token (of the form "ghp_....").
+func NewClient(token string) *Client {
+	return &Client{token: token}
 }
 
 // A Vars is a binding of GraphQL variables to JSON-able values (usually strings).
@@ -131,8 +129,8 @@ Retry:
 	if err != nil {
 		return err
 	}
-	if c.user != "" {
-		req.SetBasicAuth(c.user, c.passwd)
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 
 	previews := []string{
