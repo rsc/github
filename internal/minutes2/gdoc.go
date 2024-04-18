@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -12,18 +13,22 @@ import (
 	"strconv"
 	"strings"
 
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 	"google.golang.org/api/docs/v1"
 	"google.golang.org/api/option"
-	"rsc.io/oauthprompt"
 )
 
 func getClient() *http.Client {
-	tokFile := "/Users/rsc/.cred/minutes2.json"
-	client, err := oauthprompt.GoogleToken(tokFile, "512347153416-eehjrr21snt0av7n1opjsorg889fcged.apps.googleusercontent.com", "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", "https://www.googleapis.com/auth/documents")
+	data, err := os.ReadFile("/Users/rsc/.cred/proposal-minutes-gdoc.json")
 	if err != nil {
 		log.Fatal(err)
 	}
-	return client
+	cfg, err := google.JWTConfigFromJSON(data, "https://www.googleapis.com/auth/documents")
+	if err != nil {
+		log.Fatal(err)
+	}
+	return cfg.Client(oauth2.NoContext)
 }
 
 type Doc struct {
@@ -46,7 +51,7 @@ func parseDoc() *Doc {
 	if true {
 		client := getClient()
 
-		srv, err := docs.NewService(ctx, option.WithHTTPClient(client))
+		srv, err := docs.NewService(context.Background(), option.WithHTTPClient(client))
 		if err != nil {
 			log.Fatalf("Unable to retrieve Docs client: %v", err)
 		}

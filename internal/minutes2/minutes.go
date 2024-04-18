@@ -142,6 +142,7 @@ func (r *Reporter) Update(doc *Doc) *Minutes {
 	}
 	sort.Strings(m.Who)
 
+	seen := make(map[int]bool)
 Issues:
 	for _, di := range doc.Issues {
 		item := r.Items[di.Number]
@@ -149,6 +150,7 @@ Issues:
 			log.Printf("missing from proposal project: #%d", di.Number)
 			continue
 		}
+		seen[di.Number] = true
 		issue := item.Issue
 		status := item.FieldByName("Status")
 		if status == nil {
@@ -348,6 +350,18 @@ Issues:
 		setLabel("Proposal-Hold", col == "Hold")
 
 		m.Events = append(m.Events, &Event{Column: col, Issue: fmt.Sprint(di.Number), Title: title, Actions: actions})
+	}
+
+	for id, item := range r.Items {
+		status := item.FieldByName("Status")
+		if status != nil {
+			switch status.Option.Name {
+			case "Active", "Likely Accept", "Likely Decline":
+				if !seen[id] {
+					log.Printf("#%d: missing from doc", id)
+				}
+			}
+		}
 	}
 
 	sort.Slice(m.Events, func(i, j int) bool {
