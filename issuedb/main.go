@@ -410,9 +410,6 @@ func syncIssueEventsByIssue(proj *ProjectSync) {
 		if !strings.HasSuffix(url[:i+1], suffix) {
 			continue
 		}
-		if url[i+1:] < "30140" {
-			continue
-		}
 		id, err := strconv.Atoi(url[i+1:])
 		if err != nil {
 			log.Fatal(url, err)
