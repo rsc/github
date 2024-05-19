@@ -227,12 +227,11 @@ func syncIssues(proj *ProjectSync) {
 
 func downloadByDate(proj *ProjectSync, api string, since *string, sinceName string) {
 	values := url.Values{
-		"client_id":     {auth.ClientID},
-		"client_secret": {auth.ClientSecret},
-		"sort":          {"updated"},
-		"direction":     {"asc"},
-		"page":          {"1"},
-		"per_page":      {"100"},
+		"client_id": {auth.ClientID},
+		"sort":      {"updated"},
+		"direction": {"asc"},
+		"page":      {"1"},
+		"per_page":  {"100"},
 	}
 	if api == "/issues" {
 		values.Set("state", "all")
@@ -434,6 +433,7 @@ func downloadPages(url, etag string, do func(*http.Response, []json.RawMessage) 
 		if etag != "" {
 			req.Header.Set("If-None-Match", etag)
 		}
+		req.SetBasicAuth(auth.ClientID, auth.ClientSecret)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			return err
