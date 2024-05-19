@@ -227,7 +227,6 @@ func syncIssues(proj *ProjectSync) {
 
 func downloadByDate(proj *ProjectSync, api string, since *string, sinceName string) {
 	values := url.Values{
-		"client_id": {auth.ClientID},
 		"sort":      {"updated"},
 		"direction": {"asc"},
 		"page":      {"1"},
