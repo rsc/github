@@ -1,6 +1,6 @@
 module rsc.io/github/internal/minutes2
 
-go 1.22
+go 1.23
 
 require (
 	golang.org/x/oauth2 v0.13.0
