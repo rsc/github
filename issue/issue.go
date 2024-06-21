@@ -22,7 +22,7 @@ Searches are always limited to open issues.
 If the query is a single number, issue prints that issue in detail,
 including all comments.
 
-Authentication
+# Authentication
 
 Issue expects to find a GitHub "personal access token" in
 $HOME/.github-issue-token and will use that token to authenticate
@@ -33,7 +33,7 @@ if you want to work with issue trackers for private repositories.
 It does not need any other permissions.
 The -token flag specifies an alternate file from which to read the token.
 
-Acme Editor Integration
+# Acme Editor Integration
 
 If the -a flag is specified, issue runs as a collection of acme windows
 instead of a command-line tool. In this mode, the query is optional.
@@ -56,7 +56,7 @@ Executing "New" opens an issue creation window.
 Executing "Search <query>" opens a new window showing the
 results of that search.
 
-Issue Window
+# Issue Window
 
 An issue window, opened by loading an issue number,
 displays full detail about an issue, a header followed by each comment.
@@ -87,7 +87,7 @@ and, if any text has been entered between the header and the "Reported by" line,
 posts that text as a new comment. If both succeed, Put then reloads the issue data.
 The "Closed" and "URL" headers cannot be changed.
 
-Issue Creation Window
+# Issue Creation Window
 
 An issue creation window, opened by executing "New", is like an issue window
 but displays only an empty issue template:
@@ -102,7 +102,7 @@ but displays only an empty issue template:
 Once the template has been completed (only the title is required), executing "Put"
 creates the issue and converts the window into a issue window for the new issue.
 
-Issue List Window
+# Issue List Window
 
 An issue list window displays a list of all open issue numbers and titles.
 If the project has any open milestones, they are listed in a header line.
@@ -117,7 +117,7 @@ For example:
 
 As in any window, right clicking on an issue number opens a window for that issue.
 
-Search Result Window
+# Search Result Window
 
 A search result window, opened by executing "Search <query>", displays a list of issues
 matching a search query. It shows the query in a header line. For example:
@@ -133,7 +133,7 @@ matching a search query. It shows the query in a header line. For example:
 Executing "Sort" in a search result window toggles between sorting by title
 and sorting by decreasing issue number.
 
-Bulk Edit Window
+# Bulk Edit Window
 
 Executing "Bulk" in an issue list or search result window opens a new
 bulk edit window applying to the displayed issues. If there is a non-empty
@@ -166,7 +166,7 @@ the metadata header and, if any text has been entered between the header
 and the first issue line, posts that text as a comment. If all operations succeed,
 Put then refreshes the window as Get does.
 
-Milestone List Window
+# Milestone List Window
 
 The milestone list window, opened by loading any of the names
 "milestone", "Milestone", or "Milestones", displays the open project
@@ -180,7 +180,7 @@ For example:
 Loading one of the listed milestone names opens a search for issues
 in that milestone.
 
-Alternate Editor Integration
+# Alternate Editor Integration
 
 The -e flag enables basic editing of issues with editors other than acme.
 The editor invoked is $VISUAL if set, $EDITOR if set, or else ed.
@@ -189,15 +189,15 @@ opens that file in the editor, waits for the editor to exit, and then applies an
 changes from the file to the actual issues.
 
 When <query> is a single number, issue -e edits a single issue.
-See the ``Issue Window'' section above.
+See the “Issue Window” section above.
 
 If the <query> is the text "new", issue -e creates a new issue.
-See the ``Issue Creation Window'' section above.
+See the “Issue Creation Window” section above.
 
 Otherwise, for general queries, issue -e edits multiple issues in bulk.
-See the ``Bulk Edit Window'' section above.
+See the “Bulk Edit Window” section above.
 
-JSON Output
+# JSON Output
 
 The -json flag causes issue to print the results in JSON format
 using these data structures:
@@ -370,7 +370,7 @@ func printIssue(w io.Writer, project string, issue *github.Issue) error {
 	}
 	fmt.Fprintf(w, "Labels: %s\n", strings.Join(getLabelNames(issue.Labels), " "))
 	fmt.Fprintf(w, "Milestone: %s\n", getMilestoneTitle(issue.Milestone))
-	fmt.Fprintf(w, "URL: https://github.com/%s/%s/issues/%d\n", projectOwner(project), projectRepo(project), getInt(issue.Number))
+	fmt.Fprintf(w, "URL: %s\n", getString(issue.HTMLURL))
 
 	fmt.Fprintf(w, "\nReported by %s (%s)\n", getUserLogin(issue.User), getTime(issue.CreatedAt).Format(timeFormat))
 	if issue.Body != nil {

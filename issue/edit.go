@@ -376,11 +376,11 @@ func bulkEditIssues(project string, issues []*github.Issue) {
 	if err != nil {
 		errText := strings.Replace(err.Error(), "\n", "\t\n", -1)
 		if len(ids) > 0 {
-			log.Fatal("updated %d issue%s with errors:\n\t%v", len(ids), suffix(len(ids)), errText)
+			log.Fatalf("updated %d issue%s with errors:\n\t%v", len(ids), suffix(len(ids)), errText)
 		}
 		log.Fatal(errText)
 	}
-	log.Printf("updated %d issue%s", len(ids), suffix)
+	log.Printf("updated %d issue%s", len(ids), suffix(len(ids)))
 }
 
 func bulkEditStart(issues []*github.Issue) (*github.Issue, []byte) {
