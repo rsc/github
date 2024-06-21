@@ -3,7 +3,7 @@ module rsc.io/github
 go 1.22.0
 
 require (
-	9fans.net/go v0.0.5
+	9fans.net/go v0.0.7
 	github.com/google/go-github v17.0.0+incompatible
 	golang.org/x/oauth2 v0.21.0
 	rsc.io/dbstore v0.1.1
