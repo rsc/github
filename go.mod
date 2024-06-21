@@ -11,4 +11,7 @@ require (
 	rsc.io/todo v0.0.3
 )
 
-require github.com/google/go-querystring v1.1.0 // indirect
+require (
+	github.com/google/go-cmp v0.6.0 // indirect
+	github.com/google/go-querystring v1.1.0 // indirect
+)
