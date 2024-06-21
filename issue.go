@@ -23,6 +23,7 @@ const issueFields = `
   milestone { id number title }
   repository { name owner { __typename login } }
   body
+  url
   labels(first: 100) {
     nodes {
       name
@@ -471,6 +472,7 @@ type Issue struct {
 	Owner        string
 	Repo         string
 	Body         string
+	URL          string
 }
 
 func toIssue(s *schema.Issue) *Issue {
@@ -488,6 +490,7 @@ func toIssue(s *schema.Issue) *Issue {
 		Milestone:    toMilestone(s.Milestone),
 		Labels:       apply(toLabel, s.Labels.Nodes),
 		Body:         s.Body,
+		URL:          string(s.Url),
 	}
 }
 
