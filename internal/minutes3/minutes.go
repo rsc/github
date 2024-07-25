@@ -8,6 +8,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/csv"
 	"encoding/json"
 	"flag"
@@ -24,9 +25,13 @@ import (
 var docjson = flag.Bool("docjson", false, "print google doc info in json")
 var doccsv = flag.Bool("doccsv", false, "print google doc info in json")
 
-func main() {
-	flag.Parse()
+var failure = false
 
+func main() {
+	log.SetPrefix("minutes3: ")
+	log.SetFlags(0)
+
+	flag.Parse()
 	doc := parseDoc()
 	if *docjson {
 		js, err := json.MarshalIndent(doc, "", "\t")
@@ -53,7 +58,12 @@ func main() {
 	}
 	r.RetireOld()
 
-	r.Print(r.Update(doc))
+	minutes := r.Update(doc)
+	if failure {
+		return
+	}
+	fmt.Printf("TO POST TO https://go.dev/s/proposal-minutes:\n\n")
+	r.Print(minutes)
 }
 
 type Reporter struct {
@@ -116,7 +126,8 @@ func NewReporter() (*Reporter, error) {
 	r.Items = make(map[int]*github.ProjectItem)
 	for _, item := range items {
 		if item.Issue == nil {
-			log.Printf("warning: unexpected item with no issue")
+			log.Printf("unexpected project item with no issue")
+			failure = true
 			continue
 		}
 		r.Items[item.Issue.Number] = item
@@ -126,6 +137,7 @@ func NewReporter() (*Reporter, error) {
 }
 
 type Minutes struct {
+	Date   time.Time
 	Who    []string
 	Events []*Event
 }
@@ -143,6 +155,7 @@ func (r *Reporter) Update(doc *Doc) *Minutes {
 	const prefix = "https://github.com/golang/go/issues/"
 
 	m := new(Minutes)
+	m.Date = doc.Date
 
 	// Attendees
 	if len(doc.Who) == 0 {
@@ -160,6 +173,7 @@ Issues:
 		item := r.Items[di.Number]
 		if item == nil {
 			log.Printf("missing from proposal project: #%d", di.Number)
+			failure = true
 			continue
 		}
 		seen[di.Number] = true
@@ -167,16 +181,25 @@ Issues:
 		status := item.FieldByName("Status")
 		if status == nil {
 			log.Printf("item missing status: #%d", di.Number)
+			failure = true
 			continue
 		}
 
 		title := strings.TrimSpace(strings.TrimPrefix(issue.Title, "proposal:"))
 		if title != di.Title {
 			log.Printf("#%d title mismatch:\nGH: %s\nDoc: %s", di.Number, issue.Title, di.Title)
+			failure = true
 		}
 
 		url := "https://go.dev/issue/" + fmt.Sprint(di.Number)
 		actions := strings.Split(di.Minutes, ";")
+		if len(actions) == 1 && actions[0] == "" {
+			actions = nil
+		}
+		if len(actions) == 0 {
+			log.Printf("#%d missing action")
+			failure = true
+		}
 		col := "Active"
 		reason := ""
 		check := false
@@ -186,6 +209,7 @@ Issues:
 			switch a {
 			case "TODO":
 				log.Printf("%s: minutes TODO", url)
+				failure = true
 				continue Issues
 			case "accept":
 				a = "accepted"
@@ -250,6 +274,7 @@ Issues:
 			comments, err := r.Client.IssueComments(issue)
 			if err != nil {
 				log.Printf("%s: cannot read issue comments\n", url)
+				failure = true
 				continue
 			}
 			for i := len(comments) - 1; i >= 0; i-- {
@@ -262,12 +287,14 @@ Issues:
 
 			if di.Details == "" {
 				log.Printf("%s: missing proposal details", url)
+				failure = true
 				continue Issues
 			}
 			msg := fmt.Sprintf("%s\n\n%s", checkQuestion, di.Details)
 			// log.Fatalf("wouldpost %s\n%s", url, msg)
 			if err := r.Client.AddIssueComment(issue, msg); err != nil {
 				log.Printf("%s: posting comment: %v", url, err)
+				failure = true
 			}
 			log.Printf("posted %s", url)
 		}
@@ -280,6 +307,7 @@ Issues:
 			if col == "Likely Accept" || col == "Accepted" {
 				if di.Details == "" {
 					log.Printf("%s: missing proposal details", url)
+					failure = true
 					continue Issues
 				}
 				msg += "\n\n" + di.Details
@@ -288,20 +316,24 @@ Issues:
 			if col == "none" {
 				if err := r.Client.DeleteProjectItem(r.Proposals, item); err != nil {
 					log.Printf("%s: deleting proposal item: %v", url, err)
+					failure = true
 					continue
 				}
 			} else {
 				o := f.OptionByName(col)
 				if o == nil {
 					log.Printf("%s: moving from %s to %s: no such status\n", url, status.Option.Name, col)
+					failure = true
 					continue
 				}
 				if err := r.Client.SetProjectItemFieldOption(r.Proposals, item, f, o); err != nil {
 					log.Printf("%s: moving from %s to %s: %v\n", url, status.Option.Name, col, err)
+					failure = true
 				}
 			}
 			if err := r.Client.AddIssueComment(issue, msg); err != nil {
 				log.Printf("%s: posting comment: %v", url, err)
+				failure = true
 			}
 		}
 
@@ -313,6 +345,7 @@ Issues:
 				}
 				if err := r.Client.AddIssueLabels(issue, lab); err != nil {
 					log.Printf("%s: adding %s: %v", url, name, err)
+					failure = true
 				}
 			}
 		}
@@ -321,6 +354,7 @@ Issues:
 			if lab := issue.LabelByName(name); lab != nil {
 				if err := r.Client.RemoveIssueLabels(issue, lab); err != nil {
 					log.Printf("%s: removing %s: %v", url, name, err)
+					failure = true
 				}
 			}
 		}
@@ -337,6 +371,7 @@ Issues:
 			if !issue.Closed {
 				if err := r.Client.CloseIssue(issue); err != nil {
 					log.Printf("%s: closing issue: %v", url, err)
+					failure = true
 				}
 			}
 		}
@@ -345,11 +380,13 @@ Issues:
 			if strings.HasPrefix(issue.Title, "proposal:") {
 				if err := r.Client.RetitleIssue(issue, title); err != nil {
 					log.Printf("%s: retitling: %v", url, err)
+					failure = true
 				}
 			}
 			if issue.Milestone == nil || issue.Milestone.Title == "Proposal" {
 				if err := r.Client.RemilestoneIssue(issue, r.Backlog); err != nil {
 					log.Printf("%s: moving out of Proposal milestone: %v", url, err)
+					failure = true
 				}
 			}
 		}
@@ -371,6 +408,7 @@ Issues:
 			case "Active", "Likely Accept", "Likely Decline":
 				if !seen[id] {
 					log.Printf("#%d: missing from doc", id)
+					failure = true
 				}
 			}
 		}
@@ -383,14 +421,16 @@ Issues:
 }
 
 func (r *Reporter) Print(m *Minutes) {
-	fmt.Printf("**%s / ", time.Now().Format("2006-01-02"))
+	var buf bytes.Buffer
+
+	fmt.Fprintf(&buf, "**%s / ", m.Date.Format("2006-01-02"))
 	for i, who := range m.Who {
 		if i > 0 {
-			fmt.Printf(", ")
+			fmt.Fprintf(&buf, ", ")
 		}
-		fmt.Printf("%s", who)
+		fmt.Fprintf(&buf, "%s", who)
 	}
-	fmt.Printf("**\n\n")
+	fmt.Fprintf(&buf, "**\n\n")
 
 	disc, err := r.Client.Discussions("golang", "go")
 	if err != nil {
@@ -402,13 +442,13 @@ func (r *Reporter) Print(m *Minutes) {
 			continue
 		}
 		if first {
-			fmt.Printf("**Discussions (not yet proposals)**\n\n")
+			fmt.Fprintf(&buf, "**Discussions (not yet proposals)**\n\n")
 			first = false
 		}
-		fmt.Printf("- **%s** [#%d](https://go.dev/issue/%d)\n", markdownEscape(strings.TrimSpace(d.Title)), d.Number, d.Number)
+		fmt.Fprintf(&buf, "- **%s** [#%d](https://go.dev/issue/%d)\n", markdownEscape(strings.TrimSpace(d.Title)), d.Number, d.Number)
 	}
 	if !first {
-		fmt.Printf("\n")
+		fmt.Fprintf(&buf, "\n")
 	}
 
 	columns := []string{
@@ -428,21 +468,29 @@ func (r *Reporter) Print(m *Minutes) {
 				continue
 			}
 			if n == 0 {
-				fmt.Printf("**%s**\n\n", col)
+				fmt.Fprintf(&buf, "**%s**\n\n", col)
 			}
 			n++
-			fmt.Printf("- **%s** [#%s](https://go.dev/issue/%s)\n", markdownEscape(strings.TrimSpace(e.Title)), e.Issue, e.Issue)
+			fmt.Fprintf(&buf, "- **%s** [#%s](https://go.dev/issue/%s)\n", markdownEscape(strings.TrimSpace(e.Title)), e.Issue, e.Issue)
 			for _, a := range e.Actions {
-				fmt.Printf("  - %s\n", a)
+				if a == "" {
+					// If we print an empty string, the - by itself will turn
+					// the previous line into a markdown heading!
+					// Also everything should have an action.
+					log.Fatalf("#%s: missing action", e.Issue)
+				}
+				fmt.Fprintf(&buf, "  - %s\n", a)
 			}
 			m.Events[i] = nil
 		}
 		if n == 0 && col != "Hold" && col != "Other" {
-			fmt.Printf("**%s**\n\n", col)
-			fmt.Printf("- none\n")
+			fmt.Fprintf(&buf, "**%s**\n\n", col)
+			fmt.Fprintf(&buf, "- none\n")
 		}
-		fmt.Printf("\n")
+		fmt.Fprintf(&buf, "\n")
 	}
+
+	os.Stdout.Write(buf.Bytes())
 }
 
 var markdownEscaper = strings.NewReplacer(
