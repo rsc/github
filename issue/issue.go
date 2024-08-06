@@ -246,6 +246,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/go-github/github"
 	"golang.org/x/oauth2"
@@ -680,6 +681,9 @@ func wrap(t string, prefix string) string {
 				i = max - 1
 			}
 			i++
+			for !utf8.ValidString(s[:i]) {
+				i--
+			}
 			out += s[:i] + "\n" + prefix
 			s = s[i:]
 		}
