@@ -22,7 +22,7 @@ import (
 
 	"9fans.net/go/acme"
 	"9fans.net/go/plumb"
-	"github.com/google/go-github/github"
+	"github.com/google/go-github/v62/github"
 )
 
 func (w *awin) project() string {

@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/go-github/github"
+	"github.com/google/go-github/v62/github"
 )
 
 func editIssue(project string, original []byte, issue *github.Issue) {
@@ -136,6 +136,9 @@ func writeIssue(project string, old *github.Issue, updated []byte, isBulk bool) 
 			edit.Milestone = findMilestone(&errbuf, project, diff(line, "Milestone:", getMilestoneTitle(old.Milestone)))
 
 		case strings.HasPrefix(line, "URL:"):
+			continue
+
+		case strings.HasPrefix(line, "Reactions:"):
 			continue
 
 		default:
@@ -426,7 +429,7 @@ func commonString(x, y string) string {
 	return x
 }
 
-func commonLabels(x, y []github.Label) []github.Label {
+func commonLabels(x, y []*github.Label) []*github.Label {
 	if len(x) == 0 || len(y) == 0 {
 		return nil
 	}
@@ -434,7 +437,7 @@ func commonLabels(x, y []github.Label) []github.Label {
 	for _, lab := range y {
 		have[getString(lab.Name)] = true
 	}
-	var out []github.Label
+	var out []*github.Label
 	for _, lab := range x {
 		if have[getString(lab.Name)] {
 			out = append(out, lab)

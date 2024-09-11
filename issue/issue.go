@@ -216,12 +216,25 @@ using these data structures:
 		Created   time.Time
 		Text      string
 		Comments  []*Comment
+		Reactions Reactions
 	}
 
 	type Comment struct {
-		Author string
-		Time   time.Time
-		Text   string
+		Author    string
+		Time      time.Time
+		Text      string
+		Reactions Reactions
+	}
+
+	type Reactions struct {
+		PlusOne   int
+		MinusOne  int
+		Laugh     int
+		Confused  int
+		Heart     int
+		Hooray    int
+		Rocket    int
+		Eyes      int
 	}
 
 If asked for a specific issue, the output is an Issue with Comments.
@@ -247,7 +260,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/go-github/github"
+	"github.com/google/go-github/v62/github"
 	"golang.org/x/oauth2"
 )
 
@@ -371,7 +384,7 @@ func printIssue(w io.Writer, project string, issue *github.Issue) error {
 	fmt.Fprintf(w, "Labels: %s\n", strings.Join(getLabelNames(issue.Labels), " "))
 	fmt.Fprintf(w, "Milestone: %s\n", getMilestoneTitle(issue.Milestone))
 	fmt.Fprintf(w, "URL: %s\n", getString(issue.HTMLURL))
-
+	fmt.Fprintf(w, "Reactions: %v\n", getReactions(issue.Reactions))
 	fmt.Fprintf(w, "\nReported by %s (%s)\n", getUserLogin(issue.User), getTime(issue.CreatedAt).Format(timeFormat))
 	if issue.Body != nil {
 		if *rawFlag {
@@ -408,6 +421,10 @@ func printIssue(w io.Writer, project string, issue *github.Issue) error {
 					}
 				}
 			}
+			if r := getReactions(com.Reactions); r != (Reactions{}) {
+				fmt.Fprintf(w, "\n\t%v\n", r)
+			}
+
 			output = append(output, buf.String())
 		}
 		if err != nil {
@@ -527,8 +544,8 @@ func searchIssues(project, q string) ([]*github.Issue, error) {
 			},
 		})
 		for i := range x.Issues {
-			updateIssueCache(project, &x.Issues[i])
-			all = append(all, &x.Issues[i])
+			updateIssueCache(project, x.Issues[i])
+			all = append(all, x.Issues[i])
 		}
 		if err != nil {
 			return all, err
@@ -749,11 +766,11 @@ func getUserLogin(x *github.User) string {
 	return *x.Login
 }
 
-func getTime(x *time.Time) time.Time {
+func getTime(x *github.Timestamp) time.Time {
 	if x == nil {
 		return time.Time{}
 	}
-	return (*x).Local()
+	return x.Local()
 }
 
 func getMilestoneTitle(x *github.Milestone) string {
@@ -763,7 +780,7 @@ func getMilestoneTitle(x *github.Milestone) string {
 	return *x.Title
 }
 
-func getLabelNames(x []github.Label) []string {
+func getLabelNames(x []*github.Label) []string {
 	var out []string
 	for _, lab := range x {
 		out = append(out, getString(lab.Name))
@@ -839,12 +856,25 @@ type Issue struct {
 	Created   time.Time
 	Text      string
 	Comments  []*Comment
+	Reactions Reactions
 }
 
 type Comment struct {
-	Author string
-	Time   time.Time
-	Text   string
+	Author    string
+	Time      time.Time
+	Text      string
+	Reactions Reactions
+}
+
+type Reactions struct {
+	PlusOne  int
+	MinusOne int
+	Laugh    int
+	Confused int
+	Heart    int
+	Hooray   int
+	Rocket   int
+	Eyes     int
 }
 
 func showJSONIssue(w io.Writer, project string, issue *github.Issue) {
@@ -884,6 +914,7 @@ func toJSON(project string, issue *github.Issue) *Issue {
 		Created:   getTime(issue.CreatedAt),
 		Text:      getString(issue.Body),
 		Comments:  []*Comment{},
+		Reactions: getReactions(issue.Reactions),
 	}
 	if j.Labels == nil {
 		j.Labels = []string{}
@@ -905,9 +936,10 @@ func toJSONWithComments(project string, issue *github.Issue) *Issue {
 		}
 		for _, com := range list {
 			j.Comments = append(j.Comments, &Comment{
-				Author: getUserLogin(com.User),
-				Time:   getTime(com.CreatedAt),
-				Text:   getString(com.Body),
+				Author:    getUserLogin(com.User),
+				Time:      getTime(com.CreatedAt),
+				Text:      getString(com.Body),
+				Reactions: getReactions(com.Reactions),
 			})
 		}
 		if resp.NextPage < page {
@@ -916,6 +948,51 @@ func toJSONWithComments(project string, issue *github.Issue) *Issue {
 		page = resp.NextPage
 	}
 	return j
+}
+
+func (r Reactions) String() string {
+	var buf bytes.Buffer
+	add := func(s string, n int) {
+		if n != 0 {
+			if buf.Len() != 0 {
+				buf.WriteString(" ")
+			}
+			fmt.Fprintf(&buf, "%s %d", s, n)
+		}
+	}
+	add("👍", r.PlusOne)
+	add("👎", r.MinusOne)
+	add("😆", r.Laugh)
+	add("😕", r.Confused)
+	add("♥", r.Heart)
+	add("🎉", r.Hooray)
+	add("🚀", r.Rocket)
+	add("👀", r.Eyes)
+	return buf.String()
+}
+
+func getReactions(r *github.Reactions) Reactions {
+	if r == nil {
+		return Reactions{}
+	}
+	return Reactions{
+		PlusOne:  z(r.PlusOne),
+		MinusOne: z(r.MinusOne),
+		Laugh:    z(r.Laugh),
+		Confused: z(r.Confused),
+		Heart:    z(r.Heart),
+		Hooray:   z(r.Hooray),
+		Rocket:   z(r.Rocket),
+		Eyes:     z(r.Eyes),
+	}
+}
+
+func z[T any](x *T) T {
+	if x == nil {
+		var zero T
+		return zero
+	}
+	return *x
 }
 
 func newLogger(t http.RoundTripper) http.RoundTripper {
