@@ -262,7 +262,7 @@ func downloadByDate(proj *ProjectSync, api string, since *string, sinceName stri
 				return fmt.Errorf("parsing message: %v", err)
 			}
 			if meta.Updated == "" {
-				return fmt.Errorf("parsing message: no updated_at: %s\n", string(m))
+				return fmt.Errorf("parsing message: no updated_at: %s", string(m))
 			}
 			last = meta.Updated
 
@@ -271,14 +271,14 @@ func downloadByDate(proj *ProjectSync, api string, since *string, sinceName stri
 			raw.Project = proj.Name
 			switch api {
 			default:
-				log.Fatal("downloadByDate: unknown API: %v", api)
+				log.Fatalf("downloadByDate: unknown API: %v", api)
 			case "/issues":
 				raw.Issue = meta.Number
 			case "/issues/comments":
 				i := strings.LastIndex(meta.IssueURL, "/")
 				n, err := strconv.ParseInt(meta.IssueURL[i+1:], 10, 64)
 				if err != nil {
-					log.Fatal("cannot find issue number in /issues/comments API: %v", urlStr)
+					log.Fatalf("cannot find issue number in /issues/comments API: %v", urlStr)
 				}
 				raw.Issue = n
 			}
@@ -600,7 +600,7 @@ func retime() {
 	for {
 		var all []RawJSON
 		if err := storage.Select(db, &all, "where URL > ? and Time = ? order by URL asc limit 100", last, ""); err != nil {
-			log.Fatal("sql: %v", err)
+			log.Fatalf("sql: %v", err)
 		}
 		if len(all) == 0 {
 			break

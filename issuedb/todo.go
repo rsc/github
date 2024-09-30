@@ -257,7 +257,7 @@ func process(proj *ProjectSync, since time.Time, do func(proj *ProjectSync, issu
 	for rows.Next() {
 		var raw RawJSON
 		if err := rows.Scan(&raw.URL, &raw.Project, &raw.Issue, &raw.Type, &raw.JSON, &raw.Time); err != nil {
-			log.Fatal("sql scan RawJSON: %v", err)
+			log.Fatalf("sql scan RawJSON: %v", err)
 		}
 		if raw.Issue != lastIssue {
 			if len(items) > 0 {
