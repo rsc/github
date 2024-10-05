@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -25,9 +26,11 @@ import (
 	"github.com/google/go-github/v62/github"
 )
 
+const root = "/issue/"
+
 func (w *awin) project() string {
 	p := w.prefix
-	p = strings.TrimPrefix(p, "/issue/")
+	p = strings.TrimPrefix(p, root)
 	i := strings.Index(p, "/")
 	if i >= 0 {
 		j := strings.Index(p[i+1:], "/")
@@ -40,7 +43,7 @@ func (w *awin) project() string {
 
 func acmeMode() {
 	var dummy awin
-	dummy.prefix = "/issue/" + *project + "/"
+	dummy.prefix = path.Join(root, *project) + "/"
 	if flag.NArg() > 0 {
 		// TODO(rsc): Without -a flag, the query is conatenated into one query.
 		// Decide which behavior should be used, and use it consistently.
@@ -59,59 +62,59 @@ func acmeMode() {
 		dummy.Look("all")
 	}
 
-	go dummy.plumbserve()
+	go plumbserve()
 
 	select {}
 }
 
-func (w *awin) plumbserve() {
+func plumbserve() {
 	fid, err := plumb.Open("githubissue", 0)
 	if err != nil {
-		w.Err(fmt.Sprintf("plumb: %v", err))
+		acme.Errf(root, "plumb: %v", err)
 		return
 	}
 	r := bufio.NewReader(fid)
 	for {
 		var m plumb.Message
 		if err := m.Recv(r); err != nil {
-			w.Err(fmt.Sprintf("plumb recv: %v", err))
+			acme.Errf(root, "plumb recv: %v", err)
 			return
 		}
 		if m.Type != "text" {
-			w.Err(fmt.Sprintf("plumb recv: unexpected type: %s\n", m.Type))
+			acme.Errf(root, "plumb recv: unexpected type: %s", m.Type)
 			continue
 		}
 		if m.Dst != "githubissue" {
-			w.Err(fmt.Sprintf("plumb recv: unexpected dst: %s\n", m.Dst))
+			acme.Errf(root, "plumb recv: unexpected dst: %s", m.Dst)
 			continue
 		}
 		// TODO use m.Dir
 		data := string(m.Data)
 		var project, what string
-		if strings.HasPrefix(data, "/issue/") {
-			project = data[len("/issue/"):]
+		if strings.HasPrefix(data, root) {
+			project = data[len(root):]
 			i := strings.LastIndex(project, "/")
 			if i < 0 {
-				w.Err(fmt.Sprintf("plumb recv: bad text %q", data))
+				acme.Errf(root, "plumb recv: bad text %q", data)
 				continue
 			}
 			project, what = project[:i], project[i+1:]
 		} else {
 			i := strings.Index(data, "#")
 			if i < 0 {
-				w.Err(fmt.Sprintf("plumb recv: bad text %q", data))
+				acme.Errf(root, "plumb recv: bad text %q", data)
 				continue
 			}
 			project, what = data[:i], data[i+1:]
 		}
 		if strings.Count(project, "/") != 1 {
-			w.Err(fmt.Sprintf("plumb recv: bad text %q", data))
+			acme.Errf(root, "plumb recv: bad text %q", data)
 			continue
 		}
 		var plummy awin
-		plummy.prefix = "/issue/" + project + "/"
+		plummy.prefix = path.Join(root, project) + "/"
 		if !plummy.Look(what) {
-			w.Err(fmt.Sprintf("plumb recv: can't look %s%s", plummy.prefix, what))
+			acme.Errf(root, "plumb recv: can't look %s%s", plummy.prefix, what)
 		}
 	}
 }
@@ -251,7 +254,7 @@ func (w *awin) Look(text string) bool {
 	if m := repoHashRE.FindStringSubmatch(text); m != nil {
 		project := m[1]
 		what := m[2]
-		prefix := "/issue/" + project + "/"
+		prefix := path.Join(root, project) + "/"
 		if acme.Show(prefix+what) != nil {
 			return true
 		}
