@@ -163,6 +163,7 @@ func (c *Client) IssueComments(issue *Issue) ([]*IssueComment, error) {
 	            createdAt
 	            publishedAt
 	            updatedAt
+	            url
 	            issue { number }
 	            repository { name owner { __typename login } }
 	          }
@@ -516,6 +517,7 @@ type IssueComment struct {
 	CreatedAt   time.Time
 	PublishedAt time.Time
 	UpdatedAt   time.Time
+	URL         string
 	Issue       int
 	Owner       string
 	Repo        string
@@ -529,6 +531,7 @@ func toIssueComment(s *schema.IssueComment) *IssueComment {
 		ID:          string(s.Id),
 		PublishedAt: toTime(s.PublishedAt),
 		UpdatedAt:   toTime(s.UpdatedAt),
+		URL:         string(s.Url),
 		Issue:       s.Issue.GetNumber(),
 		Owner:       toOwner(&s.Repository.Owner),
 		Repo:        s.Repository.Name,
