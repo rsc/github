@@ -48,5 +48,7 @@ rsc.io/dbstore v0.1.1/go.mod h1:zI7k1PCSLg9r/T2rBM4E/SctbGmqdtt3kjQSemVh1Rs=
 rsc.io/sqlite v0.5.0/go.mod h1:fqHuveM9iIqMzjD0WiZIvKYMty/WqTo2bxE9+zC54WE=
 rsc.io/sqlite v1.0.0 h1:zUGL/JDeFfblrma2rToXG+fUsGZe+CShUHI3KlUNwQc=
 rsc.io/sqlite v1.0.0/go.mod h1:bRoHdqsJCgrcQDvBeCS454l4kLoFAQKHdwfwpoweIOo=
+rsc.io/tmplfunc v0.0.3 h1:53XFQh69AfOa8Tw0Jm7t+GV7KZhOi6jzsCzTtKbMvzU=
+rsc.io/tmplfunc v0.0.3/go.mod h1:AG3sTPzElb1Io3Yg4voV9AGZJuleGAwaVRxL9M49PhA=
 rsc.io/todo v0.0.3 h1:DWSgkhecAPVCwVYwfR553iqD7RDbb2xkQX2aLgfxY0g=
 rsc.io/todo v0.0.3/go.mod h1:+iFBcy95zGkDzsHTv8yqeQ+6biho3V6DQbNbcC67X3A=
