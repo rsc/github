@@ -98,6 +98,8 @@ func (c *Client) Discussions(org, repo string) ([]*Discussion, error) {
 	        totalCount
 	        nodes {
 	          locked
+	          closed
+	          closedAt
 	          number
 	          title
 	          repository { name owner { __typename login } }
@@ -410,12 +412,14 @@ func toLabel(s *schema.Label) *Label {
 }
 
 type Discussion struct {
-	Locked bool
-	Title  string
-	Number int
-	Owner  string
-	Repo   string
-	Body   string
+	Title    string
+	Number   int
+	Locked   bool
+	Closed   bool
+	ClosedAt time.Time
+	Owner    string
+	Repo     string
+	Body     string
 }
 
 func toAuthor(a *schema.Actor) string {
@@ -434,12 +438,14 @@ func toOwner(o *schema.RepositoryOwner) string {
 
 func toDiscussion(s *schema.Discussion) *Discussion {
 	return &Discussion{
-		Locked: s.Locked,
-		Title:  s.Title,
-		Number: s.Number,
-		Owner:  toOwner(&s.Repository.Owner),
-		Repo:   s.Repository.Name,
-		Body:   s.Body,
+		Title:    s.Title,
+		Number:   s.Number,
+		Locked:   s.Locked,
+		Closed:   s.Closed,
+		ClosedAt: toTime(s.ClosedAt),
+		Owner:    toOwner(&s.Repository.Owner),
+		Repo:     s.Repository.Name,
+		Body:     s.Body,
 	}
 }
 
