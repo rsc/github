@@ -6,6 +6,7 @@
 package schema
 
 import (
+	"bytes"
 	"encoding/json"
 	"html/template"
 	"fmt"
@@ -16,6 +17,11 @@ var (
 	_ = fmt.Sprint
 	_ = json.Marshal
 )
+
+func isNull(js []byte) bool {
+	js = bytes.Trim(js, " \t\r\n") // Trim JS whitespace
+	return string(js) == "null"
+}
 
 {{range .Types}}
 {{registerType .Name}}
@@ -128,6 +134,9 @@ func (x *{{.Name}}) UnmarshalJSON(js []byte) error {
 	}
 	switch info.Typename {
 	default:
+		if isNull(js) {
+			return nil
+		}
 		return fmt.Errorf("unexpected type %q for {{.Name}}", info.Typename)
 	{{range .PossibleTypes -}}
 	case "{{.Name}}":
