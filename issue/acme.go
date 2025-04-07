@@ -42,7 +42,7 @@ func acmeMode() {
 	var dummy awin
 	dummy.prefix = "/issue/" + *project + "/"
 	if flag.NArg() > 0 {
-		// TODO(rsc): Without -a flag, the query is conatenated into one query.
+		// TODO(rsc): Without -a flag, the query is concatenated into one query.
 		// Decide which behavior should be used, and use it consistently.
 		// TODO(rsc): Block this look from doing the multiline selection mode?
 		for _, arg := range flag.Args() {

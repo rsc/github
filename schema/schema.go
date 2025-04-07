@@ -3418,7 +3418,7 @@ type CheckRunFilter struct {
 	// GraphQL type: String
 	CheckName string `json:"checkName,omitempty"`
 
-	// Status: Filters the check runs by this status. Superceded by statuses.
+	// Status: Filters the check runs by this status. Superseded by statuses.
 	//
 	// GraphQL type: CheckStatusState
 	Status CheckStatusState `json:"status,omitempty"`
@@ -18132,7 +18132,7 @@ type MergeQueueConfiguration struct {
 	// MinimumEntriesToMerge: The minimum number of entries required to merge at once.
 	MinimumEntriesToMerge int `json:"minimumEntriesToMerge,omitempty"`
 
-	// MinimumEntriesToMergeWaitTime: The amount of time in minutes to wait before ignoring the minumum number of entries in the queue requirement and merging a collection of entries.
+	// MinimumEntriesToMergeWaitTime: The amount of time in minutes to wait before ignoring the minimum number of entries in the queue requirement and merging a collection of entries.
 	MinimumEntriesToMergeWaitTime int `json:"minimumEntriesToMergeWaitTime,omitempty"`
 }
 
@@ -18277,7 +18277,7 @@ type MergeQueueMergingStrategy string
 // MergeQueueMergingStrategy_ALLGREEN: Entries only allowed to merge if they are passing.
 const MergeQueueMergingStrategy_ALLGREEN MergeQueueMergingStrategy = "ALLGREEN"
 
-// MergeQueueMergingStrategy_HEADGREEN: Failing Entires are allowed to merge if they are with a passing entry.
+// MergeQueueMergingStrategy_HEADGREEN: Failing entries are allowed to merge if they are with a passing entry.
 const MergeQueueMergingStrategy_HEADGREEN MergeQueueMergingStrategy = "HEADGREEN"
 
 // MergeQueueParameters (OBJECT): Merges must be performed via a merge queue.
