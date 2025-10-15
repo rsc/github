@@ -372,15 +372,15 @@ func (c *Client) RemilestoneIssue(issue *Issue, milestone *Milestone) error {
 
 func (c *Client) AddProjectIssue(project *Project, issue *Issue) (*ProjectItem, error) {
 	const graphql = `
-	  mutation AddItemToProject($projectID: ID!, $contentID: ID!) {
-	    addProjectV2ItemById(input: {projectId: $projectID, contentID: $contentId}) {
+	  mutation AddItemToProject($projectId: ID!, $contentId: ID!) {
+	    addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
 		  item {
 		    ` + projectItemFields + `
 		  }
 	    }
 	  }
 	`
-	m, err := c.GraphQLMutation(graphql, Vars{"projectID": project.ID, "contentID": issue.ID})
+	m, err := c.GraphQLMutation(graphql, Vars{"projectId": project.ID, "contentId": issue.ID})
 	if err != nil {
 		return nil, err
 	}
