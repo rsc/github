@@ -95,6 +95,73 @@ func (c *Client) Projects(org, query string) ([]*Project, error) {
 	)
 }
 
+const projectItemFields = `
+    databaseId
+    fieldValues(first: 100) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      totalCount
+      nodes {
+        __typename
+        ... on ProjectV2ItemFieldDateValue {
+          createdAt databaseId id updatedAt
+          date
+          field { __typename ... on ProjectV2Field { databaseId id name } }
+        }
+        ... on ProjectV2ItemFieldIterationValue {
+          createdAt databaseId id updatedAt
+          field { __typename ... on ProjectV2IterationField { databaseId id name } }
+        }
+        ... on ProjectV2ItemFieldLabelValue {
+          field { __typename ... on ProjectV2Field { databaseId id name } }
+        }
+        ... on ProjectV2ItemFieldMilestoneValue {
+          field { __typename ... on ProjectV2Field { databaseId id name } }
+        }
+        ... on ProjectV2ItemFieldNumberValue {
+          createdAt databaseId id updatedAt
+          number
+          field { __typename ... on ProjectV2Field { databaseId id name } }
+        }
+        ... on ProjectV2ItemFieldPullRequestValue {
+          field { __typename ... on ProjectV2Field { databaseId id name } }
+        }
+        ... on ProjectV2ItemFieldRepositoryValue {
+          field { __typename ... on ProjectV2Field { databaseId id name } }
+        }
+        ... on ProjectV2ItemFieldReviewerValue {
+          field { __typename ... on ProjectV2Field { databaseId id name } }
+        }
+        ... on ProjectV2ItemFieldSingleSelectValue {
+          createdAt databaseId id updatedAt
+          name nameHTML optionId
+          field { __typename ... on ProjectV2SingleSelectField { databaseId id name } }
+        }
+        ... on ProjectV2ItemFieldTextValue {
+          createdAt databaseId id updatedAt
+          text
+          field { __typename ... on ProjectV2Field { databaseId id name } }
+        }
+        ... on ProjectV2ItemFieldUserValue {
+          field { __typename ... on ProjectV2Field { databaseId id name } }
+        }
+      }
+    }
+    id
+    isArchived
+    type
+    updatedAt
+    createdAt
+    content {
+      __typename
+      ... on Issue {
+        ` + issueFields + `
+      }
+    }
+`
+
 func (c *Client) ProjectItems(p *Project) ([]*ProjectItem, error) {
 	graphql := `
 	  query($Org: String!, $ProjectNumber: Int!, $Cursor: String) {
@@ -107,70 +174,7 @@ func (c *Client) ProjectItems(p *Project) ([]*ProjectItem, error) {
 	          }
 	          totalCount
 	          nodes {
-	            databaseId
-	            fieldValues(first: 100) {
-	              pageInfo {
-	                hasNextPage
-	                endCursor
-	              }
-	              totalCount
-	              nodes {
-	                __typename
-	                ... on ProjectV2ItemFieldDateValue {
-	                  createdAt databaseId id updatedAt
-	                  date
-	                  field { __typename ... on ProjectV2Field { databaseId id name } }
-	                }
-	                ... on ProjectV2ItemFieldIterationValue {
-	                  createdAt databaseId id updatedAt
-	                  field { __typename ... on ProjectV2IterationField { databaseId id name } }
-	                }
-	                ... on ProjectV2ItemFieldLabelValue {
-	                  field { __typename ... on ProjectV2Field { databaseId id name } }
-	                }
-	                ... on ProjectV2ItemFieldMilestoneValue {
-	                  field { __typename ... on ProjectV2Field { databaseId id name } }
-	                }
-	                ... on ProjectV2ItemFieldNumberValue {
-	                  createdAt databaseId id updatedAt
-	                  number
-	                  field { __typename ... on ProjectV2Field { databaseId id name } }
-	                }
-	                ... on ProjectV2ItemFieldPullRequestValue {
-	                  field { __typename ... on ProjectV2Field { databaseId id name } }
-	                }
-	                ... on ProjectV2ItemFieldRepositoryValue {
-	                  field { __typename ... on ProjectV2Field { databaseId id name } }
-	                }
-	                ... on ProjectV2ItemFieldReviewerValue {
-	                  field { __typename ... on ProjectV2Field { databaseId id name } }
-	                }
-	                ... on ProjectV2ItemFieldSingleSelectValue {
-	                  createdAt databaseId id updatedAt
-	                  name nameHTML optionId
-	                  field { __typename ... on ProjectV2SingleSelectField { databaseId id name } }
-	                }
-	                ... on ProjectV2ItemFieldTextValue {
-	                  createdAt databaseId id updatedAt
-	                  text
-	                  field { __typename ... on ProjectV2Field { databaseId id name } }
-	                }
-	                ... on ProjectV2ItemFieldUserValue {
-	                  field { __typename ... on ProjectV2Field { databaseId id name } }
-	                }
-	              }
-	            }
-	            id
-	            isArchived
-	            type
-	            updatedAt
-	            createdAt
-	            content {
-	              __typename
-	              ... on Issue {
-	                ` + issueFields + `
-	              }
-	            }
+			    ` + projectItemFields + `
 	          }
 	        }
 	      }
