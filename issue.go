@@ -370,6 +370,23 @@ func (c *Client) RemilestoneIssue(issue *Issue, milestone *Milestone) error {
 	return err
 }
 
+func (c *Client) AddProjectIssue(project *Project, issue *Issue) (*ProjectItem, error) {
+	const graphql = `
+	  mutation AddItemToProject($projectID: ID!, $contentID: ID!) {
+	    addProjectV2ItemById(input: {projectId: $projectID, contentID: $contentId}) {
+		  item {
+		    ` + projectItemFields + `
+		  }
+	    }
+	  }
+	`
+	m, err := c.GraphQLMutation(graphql, Vars{"projectID": project.ID, "contentID": issue.ID})
+	if err != nil {
+		return nil, err
+	}
+	return project.toProjectItem(m.AddProjectV2ItemById.Item), nil
+}
+
 func (c *Client) SetProjectItemFieldOption(project *Project, item *ProjectItem, field *ProjectField, option *ProjectFieldOption) error {
 	graphql := `
 	  mutation($Project: ID!, $Item: ID!, $Field: ID!, $Option: String!) {
