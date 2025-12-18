@@ -292,7 +292,7 @@ func (c *Client) CreateIssue(repo *Repo, title, body string, extra ...any) (*Iss
 		}
 	}
 	graphql := `
-	  mutation($Repo: ID!, $Title: String!, $Body: String!, $Labels: [ID!]!) {
+	  mutation($Repo: ID!, $Title: String!, $Body: String!, $Labels: [ID!]) {
 	    createIssue(input: {repositoryId: $Repo, title: $Title, body: $Body, labelIds: $Labels}) {
 	      clientMutationId
 	      issue {
