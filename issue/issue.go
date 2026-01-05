@@ -39,6 +39,11 @@ If the -a flag is specified, issue runs as a collection of acme windows
 instead of a command-line tool. In this mode, the query is optional.
 If no query is given, issue uses "state:open".
 
+This mode requires an existing plumb port called "githubissue", which can
+be created with the following plumbing rule:
+
+	plumb to	githubissue
+
 There are three kinds of acme windows: issue, issue creation, issue list,
 search result, and milestone list.
 
